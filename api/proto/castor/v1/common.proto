@@ -1,0 +1,96 @@
+syntax = "proto3";
+
+package castor.v1;
+
+option go_package = "github.com/tharunn0/castor/api/gen/go/castor/v1;castorv1";
+
+import "google/protobuf/timestamp.proto";
+
+// NodeStatus represents the operational health of a storage node.
+enum NodeStatus {
+  NODE_STATUS_UNSPECIFIED = 0;
+  NODE_STATUS_HEALTHY     = 1;
+  NODE_STATUS_DEGRADED    = 2;
+  NODE_STATUS_OFFLINE     = 3;
+}
+
+// NodeCapacity describes the storage utilization and status of a data-svc node.
+message NodeCapacity {
+  string node_id                      = 1;
+  string grpc_address                 = 2;
+  int64 total_bytes                   = 3;
+  int64 free_bytes                    = 4;
+  double free_ratio                   = 5;
+  NodeStatus status                   = 6;
+  google.protobuf.Timestamp last_seen = 7;
+}
+
+// ChunkPlacement describes a newly written chunk and its target storage nodes.
+message ChunkPlacement {
+  string chunk_hash              = 1; // SHA-256 digest
+  repeated string node_addresses = 2; // Target storage nodes hosting this chunk
+  int64 size                     = 3; // Chunk size in bytes (up to 4MB)
+}
+
+// ChunkWithLocations describes a chunk and all its active replica node locations.
+message ChunkWithLocations {
+  string chunk_hash              = 1; // SHA-256 digest
+  repeated string node_addresses = 2; // Storage nodes hosting this replica
+  int64 size                     = 3; // Chunk size in bytes
+}
+
+// ---------------------------------------------------------------------------
+// BadgerDB State Machine Records
+// ---------------------------------------------------------------------------
+
+// BucketRecord represents persisted metadata for an S3 bucket.
+message BucketRecord {
+  string name                          = 1;
+  google.protobuf.Timestamp created_at = 2;
+  map<string, string> tags             = 3;
+  bool is_deleted                      = 4;
+}
+
+// ManifestRecord represents an object's metadata and its ordered chunk list.
+message ManifestRecord {
+  string bucket                           = 1;
+  string key                              = 2;
+  int64 size                              = 3;
+  string etag                             = 4; // Hex-encoded SHA-256
+  string content_type                     = 5;
+  repeated string chunk_ids               = 6; // Ordered SHA-256 chunk digests
+  string status                           = 7; // "pending" | "committed" | "deleted"
+  google.protobuf.Timestamp created_at    = 8;
+  google.protobuf.Timestamp updated_at    = 9;
+  map<string, string> user_metadata       = 10;
+}
+
+// ChunkLocationRecord tracks content-addressed chunk references and replica locations.
+message ChunkLocationRecord {
+  string chunk_hash                           = 1; // SHA-256 digest
+  int64 size                                  = 2; // Chunk size in bytes
+  repeated string nodes                       = 3; // data-svc addresses holding this chunk
+  int32 ref_count                             = 4; // Active manifest references
+  google.protobuf.Timestamp orphaned_at       = 5; // Set when ref_count == 0 (24h quarantine)
+}
+
+// MultipartRecord tracks an active S3 multipart upload session.
+message MultipartRecord {
+  string upload_id                     = 1;
+  string bucket                        = 2;
+  string key                           = 3;
+  string content_type                  = 4;
+  string status                        = 5; // "pending" | "completed" | "aborted"
+  google.protobuf.Timestamp created_at = 6;
+  map<string, string> user_metadata    = 7;
+}
+
+// PartRecord represents an individual uploaded part in a multipart session.
+message PartRecord {
+  string upload_id                          = 1;
+  int32 part_number                         = 2;
+  int64 size                                = 3;
+  string etag                               = 4;
+  repeated string chunk_ids                 = 5;
+  google.protobuf.Timestamp uploaded_at     = 6;
+}

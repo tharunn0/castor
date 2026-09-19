@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package castor.v1;
+
+option go_package = "github.com/tharunn0/castor/api/gen/go/castor/v1;castorv1";
+
+// DataService manages raw, content-addressed 4MB chunks on local filesystems.
+service DataService {
+  // PutChunk streams a chunk into staging and atomically promotes it to /data/chunks/xx/<hash>.
+  rpc PutChunk(stream PutChunkRequest) returns (PutChunkResponse);
+
+  // GetChunk streams raw chunk bytes to the caller with optional byte offsets.
+  rpc GetChunk(GetChunkRequest) returns (stream GetChunkResponse);
+
+  // DeleteChunk purges a chunk from disk (invoked by leader GC worker).
+  rpc DeleteChunk(DeleteChunkRequest) returns (DeleteChunkResponse);
+
+  // ReplicateChunk initiates a peer-to-peer chunk copy (invoked by healing worker).
+  rpc ReplicateChunk(ReplicateChunkRequest) returns (ReplicateChunkResponse);
+
+  // HealthCheck returns the local storage node status and disk availability.
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// Request / Response Messages
+
+message PutChunkMetadata {
+  string chunk_hash = 1; // Expected SHA-256 hex digest
+  int64 chunk_size  = 2; // Expected chunk size in bytes
+}
+
+message PutChunkRequest {
+  oneof data {
+    PutChunkMetadata metadata = 1; // First frame in the stream
+    bytes chunk_bytes         = 2; // Subsequent byte chunks
+  }
+}
+
+message PutChunkResponse {
+  string chunk_hash   = 1; // Verified SHA-256 hex digest
+  int64 bytes_written = 2; // Bytes persisted to disk
+  bool already_existed = 3; // True if duplicate chunk was already present on disk
+}
+
+message GetChunkRequest {
+  string chunk_hash = 1; // SHA-256 digest of the chunk
+  int64 offset      = 2; // Byte offset within the chunk
+  int64 length      = 3; // Length in bytes to read (0 = read until EOF)
+}
+
+message GetChunkResponse {
+  bytes chunk_bytes = 1; // Streamed byte chunk (e.g., 64KB frames)
+}
+
+message DeleteChunkRequest {
+  string chunk_hash = 1; // SHA-256 digest to delete
+}
+
+message DeleteChunkResponse {
+  bool deleted = 1;
+}
+
+message ReplicateChunkRequest {
+  string chunk_hash          = 1; // SHA-256 digest to replicate
+  string source_node_address = 2; // gRPC address of peer node holding the chunk
+}
+
+message ReplicateChunkResponse {
+  bool success           = 1;
+  int64 bytes_replicated = 2;
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  string node_id    = 1;
+  string status     = 2; // "SERVING" | "NOT_SERVING"
+  int64 total_bytes = 3;
+  int64 free_bytes  = 4;
+}

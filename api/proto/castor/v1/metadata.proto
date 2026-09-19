@@ -1,0 +1,248 @@
+syntax = "proto3";
+
+package castor.v1;
+
+import "google/protobuf/timestamp.proto";
+import "castor/v1/common.proto";
+
+option go_package = "github.com/tharunn0/castor/api/gen/go/castor/v1;castorv1";
+
+// MetadataService coordinates cluster consensus, manifest state, and node heartbeats.
+service MetadataService {
+  // Bucket management (Raft replicated)
+  rpc CreateBucket(CreateBucketMetadataRequest) returns (CreateBucketMetadataResponse);
+  rpc DeleteBucket(DeleteBucketMetadataRequest) returns (DeleteBucketMetadataResponse);
+  rpc ListBuckets(ListBucketsMetadataRequest) returns (ListBucketsMetadataResponse);
+  rpc CheckBucketExists(CheckBucketExistsRequest) returns (CheckBucketExistsResponse);
+
+  // Manifest & Chunk operations (Raft replicated)
+  rpc CheckChunks(CheckChunksRequest) returns (CheckChunksResponse);
+  rpc CommitManifest(CommitManifestRequest) returns (CommitManifestResponse);
+  rpc GetManifest(GetManifestRequest) returns (GetManifestResponse);
+  rpc DeleteManifest(DeleteManifestRequest) returns (DeleteManifestResponse);
+  rpc ListManifests(ListManifestsRequest) returns (ListManifestsResponse);
+
+  // Multipart uploads (Raft replicated)
+  rpc InitiateMultipart(InitiateMultipartMetaRequest) returns (InitiateMultipartMetaResponse);
+  rpc CommitPart(CommitPartMetaRequest) returns (CommitPartMetaResponse);
+  rpc CompleteMultipart(CompleteMultipartMetaRequest) returns (CommitManifestResponse);
+  rpc AbortMultipart(AbortMultipartMetaRequest) returns (AbortMultipartMetaResponse);
+
+  // Dynamic Heartbeat Registry (Ephemeral, in-memory, bypasses Raft)
+  rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc GetActiveNodes(GetActiveNodesRequest) returns (GetActiveNodesResponse);
+
+  // Leader-only background maintenance & repair
+  rpc UpdateChunkLocation(UpdateChunkLocationRequest) returns (UpdateChunkLocationResponse);
+  rpc RemoveChunkLocations(RemoveChunkLocationsRequest) returns (RemoveChunkLocationsResponse);
+  rpc TriggerReadRepair(TriggerReadRepairRequest) returns (TriggerReadRepairResponse);
+}
+
+// Bucket Messages
+
+message CreateBucketMetadataRequest {
+  string bucket = 1;
+  map<string, string> tags = 2;
+}
+
+message CreateBucketMetadataResponse {
+  bool created = 1;
+  google.protobuf.Timestamp created_at = 2;
+}
+
+message DeleteBucketMetadataRequest {
+  string bucket = 1;
+}
+
+message DeleteBucketMetadataResponse {
+  bool deleted = 1;
+}
+
+message ListBucketsMetadataRequest {}
+
+message ListBucketsMetadataResponse {
+  repeated BucketRecord buckets = 1;
+}
+
+message CheckBucketExistsRequest {
+  string bucket = 1;
+}
+
+message CheckBucketExistsResponse {
+  bool exists = 1;
+}
+
+// Manifest & Chunk Messages
+
+message CheckChunksRequest {
+  repeated string chunk_hashes = 1; // SHA-256 digests to check
+}
+
+message CheckChunksResponse {
+  map<string, bool> existing_chunks = 1; // chunk_hash -> exists in cluster
+}
+
+message CommitManifestRequest {
+  string bucket = 1;
+  string key = 2;
+  int64 size = 3;
+  string etag = 4; // Hex-encoded SHA-256
+  string content_type = 5;
+  repeated string chunk_ids = 6; // Ordered SHA-256 chunk digests
+  repeated ChunkPlacement chunk_placements = 7; // Locations for new chunks
+  map<string, string> user_metadata = 8;
+}
+
+message CommitManifestResponse {
+  bool committed = 1;
+  google.protobuf.Timestamp committed_at = 2;
+}
+
+message GetManifestRequest {
+  string bucket = 1;
+  string key = 2;
+}
+
+message GetManifestResponse {
+  string bucket = 1;
+  string key = 2;
+  int64 size = 3;
+  string etag = 4;
+  string content_type = 5;
+  string status = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+  repeated ChunkWithLocations chunks = 9;
+  map<string, string> user_metadata = 10;
+}
+
+message DeleteManifestRequest {
+  string bucket = 1;
+  string key = 2;
+}
+
+message DeleteManifestResponse {
+  bool deleted = 1;
+}
+
+message ListManifestsRequest {
+  string bucket = 1;
+  string prefix = 2;
+  string delimiter = 3;
+  string marker = 4;
+  int32 max_keys = 5;
+}
+
+message ListManifestsResponse {
+  repeated ManifestRecord manifests = 1;
+  repeated string common_prefixes = 2;
+  string next_marker = 3;
+  bool is_truncated = 4;
+}
+
+// Multipart Messages
+
+message InitiateMultipartMetaRequest {
+  string bucket = 1;
+  string key = 2;
+  string content_type = 3;
+  map<string, string> user_metadata = 4;
+}
+
+message InitiateMultipartMetaResponse {
+  string upload_id = 1;
+  google.protobuf.Timestamp created_at = 2;
+}
+
+message CommitPartMetaRequest {
+  string upload_id = 1;
+  int32 part_number = 2;
+  int64 size = 3;
+  string etag = 4;
+  repeated string chunk_ids = 5;
+  repeated ChunkPlacement chunk_placements = 6;
+}
+
+message CommitPartMetaResponse {
+  bool committed = 1;
+  string etag = 2;
+}
+
+message PartSummary {
+  int32 part_number = 1;
+  string etag = 2;
+}
+
+message CompleteMultipartMetaRequest {
+  string upload_id = 1;
+  repeated PartSummary parts = 2;
+}
+
+message AbortMultipartMetaRequest {
+  string upload_id = 1;
+}
+
+message AbortMultipartMetaResponse {
+  bool aborted = 1;
+}
+
+// Heartbeat & Node Discovery Messages (In-Memory)
+
+message RegisterNodeRequest {
+  string node_id = 1;
+  string grpc_address = 2;
+  int64 total_bytes = 3;
+  int64 free_bytes = 4;
+}
+
+message RegisterNodeResponse {
+  bool registered = 1;
+}
+
+message HeartbeatRequest {
+  string node_id = 1;
+  string grpc_address = 2;
+  int64 total_bytes = 3;
+  int64 free_bytes = 4;
+  google.protobuf.Timestamp timestamp = 5;
+}
+
+message HeartbeatResponse {
+  bool acknowledged = 1;
+}
+
+message GetActiveNodesRequest {}
+
+message GetActiveNodesResponse {
+  repeated NodeCapacity nodes = 1;
+}
+
+// Lifecycle & Repair Messages
+
+message UpdateChunkLocationRequest {
+  string chunk_hash = 1;
+  repeated string node_addresses = 2;
+}
+
+message UpdateChunkLocationResponse {
+  bool updated = 1;
+}
+
+message RemoveChunkLocationsRequest {
+  string chunk_hash = 1;
+  repeated string node_addresses = 2;
+}
+
+message RemoveChunkLocationsResponse {
+  bool removed = 1;
+}
+
+message TriggerReadRepairRequest {
+  string chunk_hash = 1;
+  string failed_node_address = 2;
+}
+
+message TriggerReadRepairResponse {
+  bool repair_scheduled = 1;
+}
