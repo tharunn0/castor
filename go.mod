@@ -1,4 +1,4 @@
-module github.com/tharunn0/castor.git
+module github.com/tharunn0/castor
 
 go 1.26.5
 
