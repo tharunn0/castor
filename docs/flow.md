@@ -10,11 +10,12 @@ This document details the step-by-step execution flows across Castor for Writes,
 
 1. **Client Ingress & Authentication**:
    - The S3 client (AWS CLI, SDK, or HTTP client) sends `PUT /<bucket>/<key>` with payload headers (`Content-Length`, `Content-Type`, SigV4 authentication).
-   - `gateway-svc` receives the HTTP request on port `:9000`. The embedded `versitygw` engine verifies AWS SigV4 signature credentials against configured static secrets and extracts the unencoded byte stream.
+   - `gateway-svc` receives the HTTP request on port `:9000`. The embedded `versitygw` engine verifies AWS SigV4 credentials. It checks its in-memory LRU credential cache (30s TTL); on a cache miss, it queries `auth-svc.ValidateKey(access_key_id)` to retrieve the secret key.
+   - Once validated, `gateway-svc` extracts the unencoded byte stream.
 
-2. **Bucket Verification**:
+2. **Bucket Verification & Ownership**:
    - `gateway-svc` makes a gRPC call to `metadata-svc`: `CheckBucketExists(bucket)`.
-   - The Raft leader checks its BadgerDB state store (`bucket:<bucket>`). It confirms the bucket exists and is not marked deleted, returning `OK`.
+   - The Raft leader checks its BadgerDB state store (`bucket:<bucket>`). It confirms the bucket exists, is not marked deleted, and validates user access, returning `OK`.
 
 3. **In-Memory Streaming & Chunking**:
    - `gateway-svc` pulls 4MB buffers from its in-memory pool (`sync.Pool`), bounded by a concurrency semaphore to prevent memory exhaustion.
@@ -48,12 +49,12 @@ This document details the step-by-step execution flows across Castor for Writes,
    - `gateway-svc` waits for responses. As soon as **2 of the 3 nodes** acknowledge success ($W=2$ majority quorum), the chunk is officially accepted.
    - If the 3rd node is slow, the gateway does not wait; it records whichever 2 or 3 nodes succeeded in the placement map.
 
-9. **Atomic Commit via Raft**:
-   - After all chunks of the object satisfy write quorum, `gateway-svc` sends `CommitManifest` to the `metadata-svc` Raft leader.
+9. **Atomic Commit via Raft with User Attribution**:
+   - After all chunks of the object satisfy write quorum, `gateway-svc` sends `CommitManifest` to the `metadata-svc` Raft leader, including the authenticated `owner_id`.
    - The leader serializes the command and proposes it to the 3-node Raft consensus cluster over TCP.
    - Once the Raft majority replicates the log entry, the leader applies it to the BadgerDB state machine inside a single atomic transaction (`db.Update`):
      - It creates/updates `ChunkLocationRecord` entries: increments `ref_count`, registers the successful node addresses, and clears any pending `orphaned_at` quarantine timestamps.
-     - It creates the `ManifestRecord` at `manifest:<bucket>:<key>` with `status = "committed"`, file size, creation timestamp, and ordered `chunk_ids`.
+     - It creates the `ManifestRecord` at `manifest:<bucket>:<key>` with `status = "committed"`, file size, creation timestamp, ordered `chunk_ids`, and `owner_id`.
    - The FSM returns success to the Raft leader.
 
 10. **Client Acknowledgment**:
@@ -290,3 +291,46 @@ This document details the step-by-step execution flows across Castor for Writes,
   - Background workers run **strictly on the active Raft leader**.
   - Upon losing leadership, the worker immediately aborts its current sweep.
   - The newly elected leader starts its own worker instance, scans BadgerDB afresh, and resumes safely from where the previous leader left off. No duplicate deletions cause harm because filesystem chunk removal is idempotent (`os.Remove` ignores non-existent files).
+
+---
+
+## 5. Control Plane & Web Console Lifecycle
+
+### 5.1. User Registration & JWT Authentication Flow
+1. **Registration**:
+   - The user or operator sends `POST /api/auth/register` with `{username, email, password}` to `gateway-svc :9001`.
+   - The request is forwarded to `auth-svc :9095`.
+   - `auth-svc` hashes the password using `bcrypt` (cost 12) and persists the record into the `users` table in PostgreSQL or SQLite.
+2. **Login**:
+   - The user submits `{username, password}` to `POST /api/auth/login`.
+   - `auth-svc` verifies `bcrypt.CompareHashAndPassword`.
+   - On success, `auth-svc` mints a signed JWT containing `user_id` and `role`.
+   - `gateway-svc` writes the JWT into an `HttpOnly; SameSite=Strict; Path=/` cookie in the HTTP response.
+
+### 5.2. S3 Credential Provisioning & AWS CLI Flow
+1. **Keypair Generation**:
+   - The authenticated user navigates to the **Access Keys** tab in the Web Console (`http://localhost:9001`) and clicks **"Create Access Key"**.
+   - The browser calls `POST /api/auth/keys`.
+   - `auth-svc` generates a 20-character uppercase alphanumeric `access_key_id` (e.g., `CAST2026AKIA...`) and a 40-character cryptographically random `secret_access_key`.
+   - The keypair is inserted into `s3_credentials` with `status = 'ACTIVE'`.
+   - The secret key is displayed to the user once with a "Copy to Clipboard" button and an AWS CLI configuration snippet.
+2. **CLI Usage**:
+   - The user configures their environment:
+     ```bash
+     export AWS_ACCESS_KEY_ID=CAST2026AKIA...
+     export AWS_SECRET_ACCESS_KEY=...
+     export AWS_ENDPOINT_URL=http://localhost:9000
+     aws s3 ls
+     ```
+   - Requests hitting port `:9000` are authenticated against this keypair via `gateway-svc`'s internal LRU cache and `auth-svc`.
+
+### 5.3. Web Console In-Process Upload Bridge
+1. **Browser File Drag-and-Drop**:
+   - In the Web Console's **File Explorer**, the user selects or drops a file into a bucket.
+   - The browser issues `POST /api/files/upload?bucket=<bucket>` as a standard `multipart/form-data` stream with its session cookie.
+2. **In-Process Streaming (Zero Network Hop)**:
+   - `gateway-svc` authenticates the JWT session.
+   - Instead of proxying over an external HTTP socket, `gateway-svc` feeds the `multipart` file stream directly into its own internal 4MB chunking and placement engine via an in-memory Go function call.
+   - Quorum placement ($W=2$) to `data-svc` nodes executes immediately.
+   - `CommitManifest` writes the manifest with `owner_id = session.user_id` into Raft consensus.
+   - The browser receives `200 OK` and refreshes the bucket view.

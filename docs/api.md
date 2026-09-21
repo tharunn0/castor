@@ -6,10 +6,13 @@ This document serves as the comprehensive and definitive API reference for Casto
 
 ## 1. System API Architecture & Topology
 
-Castor exposes two tiers of interfaces:
-1. **External API (Clients & Operators)**:
-   - **S3-Compatible HTTP/REST API** (`:9000` on `gateway-svc`): Full compatibility with AWS CLI, AWS SDKs (`boto3`, `@aws-sdk/client-s3`), and S3 tools (`rclone`). Also serves `/healthz` and `/metrics`.
-2. **Internal Cluster APIs (Inter-Service gRPC & Admin HTTP)**:
+Castor exposes three tiers of interfaces:
+1. **External Client & Console APIs**:
+   - **S3-Compatible HTTP/REST API** (`:9000` on `gateway-svc`): Full compatibility with AWS CLI, AWS SDKs (`boto3`, `@aws-sdk/client-s3`), and S3 tools (`rclone`). Serves `/healthz` and `/metrics`.
+   - **Web Console & BFF API** (`:9001` on `gateway-svc`): Serves the embedded single-page UI and browser-tailored JSON endpoints (`/api/*`).
+2. **Control Plane & Auth API**:
+   - **Auth Service HTTP API** (`:9095` on `auth-svc`): User registration, JWT login, S3 API keypair creation, and internal credential validation. Backed by PostgreSQL or SQLite.
+3. **Internal Cluster APIs (Inter-Service gRPC & Admin HTTP)**:
    - **Metadata Service gRPC API (`MetadataService`)** (`:9091`-`:9093` on `metadata-svc`): Raft-replicated metadata operations, dynamic node heartbeats, and lifecycle hooks. Accompanied by admin HTTP endpoints (`:9071`-`:9073`).
    - **Storage Node Data Service gRPC API (`DataService`)** (`:9101`-`:9103` on `data-svc`): Streaming chunk ingestion, retrieval, peer replication, and garbage collection.
 
@@ -17,10 +20,16 @@ Castor exposes two tiers of interfaces:
 flowchart TD
     subgraph ExternalClients["External Clients & Operators"]
         S3Client["S3 Clients (aws-cli, boto3, rclone, curl)"]
+        BrowserUI["Web Browser Console (embed.FS UI)"]
     end
 
     subgraph GatewayLayer["Gateway Layer (gateway-svc)"]
-        REST_FE["S3 REST API Frontend (:9000 HTTP)<br/>• S3 REST Operations<br/>• /healthz & /metrics"]
+        REST_FE["S3 REST API Frontend (:9000 HTTP)<br/>• S3 REST Operations<br/>• /healthz & /metrics<br/>• In-Memory Credential Cache"]
+        Console_FE["Web Console & BFF (:9001 HTTP)<br/>• Serves Static UI Assets<br/>• Browser API (/api/*)<br/>• In-Process Upload Bridge"]
+    end
+
+    subgraph ControlPlane["Control Plane (auth-svc)"]
+        AuthService["auth-svc (:9095 HTTP)<br/>• Users & Passwords (bcrypt)<br/>• S3 Keypair Management<br/>• PostgreSQL / SQLite DB"]
     end
 
     subgraph MetadataCluster["Metadata Cluster (metadata-svc)"]
@@ -34,7 +43,11 @@ flowchart TD
     end
 
     S3Client -->|HTTP/REST :9000| REST_FE
-    S3Client -.->|Admin HTTP :9071| MetaService
+    BrowserUI -->|HTTP/REST :9001| Console_FE
+
+    REST_FE -.->|Validate Key (Cache Miss)| AuthService
+    Console_FE -->|Login & Key Operations| AuthService
+    Console_FE -.->|Admin HTTP :9071| MetaService
 
     REST_FE -->|gRPC MetadataService| MetaService
     REST_FE -->|gRPC DataService| DataNode1
@@ -60,6 +73,8 @@ flowchart TD
 | Service | Component | Protocol | Default Port(s) | Description |
 |---|---|---|---|---|
 | `gateway-svc` | S3 Frontend & Health | HTTP / REST | `:9000` | S3-compatible REST endpoint, `/healthz`, `/metrics` |
+| `gateway-svc` | Web Console & BFF | HTTP / REST | `:9001` | Embedded web management UI & browser JSON API |
+| `auth-svc`    | Auth & Key Management| HTTP / REST | `:9095` | User registration, JWT login, S3 keypairs |
 | `metadata-svc`| `MetadataService` | gRPC / HTTP2 | `:9091`, `:9092`, `:9093` | Inter-service metadata & heartbeat API |
 | `metadata-svc`| Admin & Metrics | HTTP / REST | `:9071`, `:9072`, `:9073` | Operator inspection (`/admin/*`), `/metrics` |
 | `metadata-svc`| Raft Consensus | TCP | `:9081`, `:9082`, `:9083` | Internal peer Raft consensus transport |
@@ -311,6 +326,26 @@ Exposed directly by `metadata-svc` nodes (with the active leader handling state 
 - `GET /admin/nodes`: Returns JSON array of storage nodes registered in the dynamic heartbeat registry, their health states (`HEALTHY`, `DEGRADED`, `OFFLINE`), and disk capacities.
 - `POST /admin/gc`: Triggers an immediate garbage collection sweep on the Raft leader. Accepts query parameter `?dry_run=true` to report reclaimable chunks without deleting them.
 
+### 4.3. Web Console & BFF Endpoints (`gateway-svc :9001`)
+Exposed by `gateway-svc` to serve the embedded single-page UI and browser operations:
+- `GET /`: Serves precompiled static dashboard assets (HTML/CSS/JS) via Go `embed.FS`.
+- `POST /api/auth/login`: Accepts `{username, password}`, validates against `auth-svc`, and sets an `HttpOnly; SameSite=Strict` JWT session cookie.
+- `POST /api/auth/logout`: Clears the session cookie.
+- `GET /api/cluster/health`: Aggregates Raft leader status and storage node capacities into a unified JSON payload for UI visualization.
+- `GET /api/buckets`: Lists buckets owned by the authenticated user.
+- `POST /api/buckets`: Creates a bucket with `owner_id = session.user_id`.
+- `POST /api/files/upload`: In-process multipart file upload bridge directly to `gateway-svc`'s 4MB streaming chunker.
+- `GET /api/files/download`: Streams an object payload directly to the browser.
+
+### 4.4. Auth Service Endpoints (`auth-svc :9095`)
+Exposed by `auth-svc` backed by PostgreSQL or SQLite:
+- `POST /auth/register`: Creates a new user record with `bcrypt`-hashed password.
+- `POST /auth/login`: Authenticates username/password and issues a signed JWT.
+- `POST /auth/keys`: Generates a standard S3 SigV4 keypair (`access_key_id`, `secret_access_key`) for the user.
+- `GET /auth/keys`: Returns all active S3 credentials for the authenticated user.
+- `DELETE /auth/keys/{id}`: Revokes an S3 keypair.
+- `GET /internal/validate-key?access_key_id={key}`: Internal API invoked by `gateway-svc` (on LRU cache miss) returning `{secret_key, user_id, status}`.
+
 ---
 
 ## 5. Internal Metadata gRPC API (`MetadataService` :9091-:9093)
@@ -389,6 +424,7 @@ message CommitManifestRequest {
   string content_type = 5;
   repeated string chunk_ids = 6;
   repeated ChunkPlacement chunk_placements = 7;
+  string owner_id = 8; // User UUID from Auth DB
 }
 
 message CommitManifestResponse {
@@ -420,6 +456,7 @@ message GetManifestResponse {
   string status = 6;
   google.protobuf.Timestamp created_at = 7;
   repeated ChunkWithLocations chunks = 8;
+  string owner_id = 9; // User UUID from Auth DB
 }
 ```
 
