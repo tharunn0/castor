@@ -6,20 +6,29 @@ import (
 	"io"
 
 	pb "github.com/tharunn0/castor/api/gen/go/castor/v1"
+	"github.com/tharunn0/castor/internal/data/config"
+	"github.com/tharunn0/castor/internal/data/storage"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type Server struct {
 	pb.UnimplementedDataServiceServer
+	store *storage.Storage
+	cfg   config.NodeConfig
 }
 
-func New() *Server {
-	return &Server{}
+func New(s *storage.Storage, cfg config.NodeConfig) *Server {
+	return &Server{store: s, cfg: cfg}
 }
 
 func (s *Server) PutChunk(stream grpc.ClientStreamingServer[pb.PutChunkRequest, pb.PutChunkResponse]) error {
 	var totalBytes int64
-	chunkHash := "dummy-chunk-hash-001"
+
+	var metaChunkHash string
+
+	chunkBuf := make([]byte, 0, s.store.MaxChunkSize)
 
 	for {
 		req, err := stream.Recv()
@@ -27,24 +36,33 @@ func (s *Server) PutChunk(stream grpc.ClientStreamingServer[pb.PutChunkRequest, 
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("failed to receive chunk stream: %w", err)
+			return status.Errorf(codes.Internal, "failed to receive chunk stream: %v", err)
 		}
 
 		if meta := req.GetMetadata(); meta != nil && meta.GetChunkHash() != "" {
-			chunkHash = meta.GetChunkHash()
+			metaChunkHash = meta.GetChunkHash()
 		}
 		if chunkBytes := req.GetChunkBytes(); len(chunkBytes) > 0 {
+			chunkBuf = append(chunkBuf, chunkBytes...)
 			totalBytes += int64(len(chunkBytes))
 		}
 	}
 
-	if totalBytes == 0 {
-		totalBytes = 4096
+	if totalBytes > int64(s.store.MaxChunkSize) {
+		status.Errorf(
+			codes.ResourceExhausted,
+			"payload size exceeds max limit of %d bytes",
+			s.store.MaxChunkSize,
+		)
+	}
+
+	res, err := s.store.WriteChunk(nil, metaChunkHash)
+	if err != nil {
 	}
 
 	resp := &pb.PutChunkResponse{
-		ChunkHash:      chunkHash,
-		BytesWritten:   totalBytes,
+		ChunkHash:      res.Hash,
+		BytesWritten:   int64(res.Size),
 		AlreadyExisted: false,
 	}
 
@@ -84,10 +102,16 @@ func (s *Server) ReplicateChunk(ctx context.Context, req *pb.ReplicateChunkReque
 }
 
 func (s *Server) HealthCheck(ctx context.Context, req *pb.HealthCheckRequest) (*pb.HealthCheckResponse, error) {
+
+	stats, err := s.store.GetDiskStats()
+	if err != nil {
+		// log error
+	}
+
 	return &pb.HealthCheckResponse{
-		NodeId:     "storage-node-1",
+		NodeId:     s.cfg.NodeId,
 		Status:     "SERVING",
-		TotalBytes: 500 * 1024 * 1024 * 1024,
-		FreeBytes:  350 * 1024 * 1024 * 1024,
+		TotalBytes: int64(stats.TotalBytes),
+		FreeBytes:  int64(stats.FreeBytes),
 	}, nil
 }
