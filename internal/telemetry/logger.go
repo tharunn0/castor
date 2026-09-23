@@ -14,7 +14,7 @@ const (
 )
 
 func GetEnv() string {
-	for _, key := range []string{"ENV", "APP_ENV"} {
+	for _, key := range []string{"ENV", "APP_ENV", "ENVIRONMENT"} {
 		if val := strings.TrimSpace(os.Getenv(key)); val != "" {
 			return NormalizeEnv(val)
 		}

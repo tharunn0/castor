@@ -39,9 +39,7 @@ message ChunkWithLocations {
   int64 size                     = 3; // Chunk size in bytes
 }
 
-// ---------------------------------------------------------------------------
 // BadgerDB State Machine Records
-// ---------------------------------------------------------------------------
 
 // BucketRecord represents persisted metadata for an S3 bucket.
 message BucketRecord {
