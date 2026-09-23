@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/google/uuid"
 )
@@ -53,6 +52,10 @@ type WriteResult struct {
 }
 
 type ReadResult struct {
+	io.Reader
+
+	io.Closer
+
 	Hash string
 
 	Path string
@@ -124,10 +127,9 @@ func (s *Storage) WriteChunk(r io.Reader, hashHex string) (*WriteResult, error) 
 	}, nil
 }
 
-func (s *Storage) ReadChunk(hash string) (*ReadResult, error) {
+func (s *Storage) ReadChunk(hash string) (io.ReadCloser, error) {
 
-	hash = strings.ToLower(strings.TrimSpace(hash))
-
+	// build target path
 	chunkPath := filepath.Join(s.chunkPath, string(hash[:2]), hash)
 
 	if _, err := os.Stat(chunkPath); err != nil {
@@ -137,34 +139,14 @@ func (s *Storage) ReadChunk(hash string) (*ReadResult, error) {
 		return nil, err
 	}
 
-	buf := make([]byte, s.MaxChunkSize)
-
-	// dataStr, err := os.ReadFile(chunkPath)
-	// if err != nil {}
-
 	f, err := os.Open(chunkPath)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-
-	n, err := f.Read(buf)
-	if err != nil {
-		return nil, err
-	}
-	buf = buf[:n]
-
-	computedHash := hashGen(buf)
-
-	if computedHash != hash {
-		return nil, ErrHashMismatch
-	}
 
 	return &ReadResult{
-		Hash: computedHash,
-		Path: chunkPath,
-		Data: buf,
-		Size: len(buf),
+		Reader: f,
+		Closer: f,
 	}, nil
 }
 

@@ -1,8 +1,8 @@
 package server
 
 import (
+	"bytes"
 	"context"
-	"fmt"
 	"io"
 
 	pb "github.com/tharunn0/castor/api/gen/go/castor/v1"
@@ -49,15 +49,16 @@ func (s *Server) PutChunk(stream grpc.ClientStreamingServer[pb.PutChunkRequest, 
 	}
 
 	if totalBytes > int64(s.store.MaxChunkSize) {
-		status.Errorf(
+		return status.Errorf(
 			codes.ResourceExhausted,
 			"payload size exceeds max limit of %d bytes",
 			s.store.MaxChunkSize,
 		)
 	}
 
-	res, err := s.store.WriteChunk(nil, metaChunkHash)
+	res, err := s.store.WriteChunk(bytes.NewReader(chunkBuf), metaChunkHash)
 	if err != nil {
+		return status.Errorf(codes.InvalidArgument, "write chunk: %v", err)
 	}
 
 	resp := &pb.PutChunkResponse{
@@ -72,19 +73,33 @@ func (s *Server) PutChunk(stream grpc.ClientStreamingServer[pb.PutChunkRequest, 
 func (s *Server) GetChunk(req *pb.GetChunkRequest, stream grpc.ServerStreamingServer[pb.GetChunkResponse]) error {
 	chunkHash := req.GetChunkHash()
 	if chunkHash == "" {
-		chunkHash = "dummy-chunk-hash-001"
+		return status.Errorf(
+			codes.InvalidArgument,
+			"chunk hash is required",
+		)
 	}
 
-	for i := range 5 {
-		payload := fmt.Sprintf("dummy chunk data for %s [part %d]\n", chunkHash, i)
-		resp := &pb.GetChunkResponse{
-			ChunkBytes: []byte(payload),
+	rc, err := s.store.ReadChunk(req.GetChunkHash())
+	if err != nil {
+		return status.Errorf(codes.NotFound, "chunk not found: %v", err)
+	}
+	defer rc.Close()
+
+	buf := make([]byte, 64*1024)
+	for {
+		n, err := rc.Read(buf)
+		if n > 0 {
+			if sendErr := stream.Send(&pb.GetChunkResponse{ChunkBytes: buf[:n]}); sendErr != nil {
+				return sendErr
+			}
 		}
-		if err := stream.Send(resp); err != nil {
-			return fmt.Errorf("failed to send chunk stream: %w", err)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
 		}
 	}
-
 	return nil
 }
 
