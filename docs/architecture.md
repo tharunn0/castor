@@ -23,8 +23,8 @@ flowchart TD
 
     subgraph GatewayLayer["Gateway Layer (gateway-svc, Stateless, Horizontally Scalable)"]
         direction TB
-        GW_S3["Port :9000: S3 REST Frontend<br/>• versitygw (SigV4, Path-Style)<br/>• 4MB Fixed Chunking & SHA-256 Hashing<br/>• sync.Pool Buffer Pool & Backpressure<br/>• Quorum Coordinator (W=2, Replication=3)<br/>• In-Memory Credential Cache (30s TTL)"]
-        GW_UI["Port :9001: Web Console & BFF (embed.FS)<br/>• Serves Static Dashboard Assets<br/>• Browser JSON API (/api/*)<br/>• In-Process Upload Bridge"]
+        GW_S3["Port :9000: S3 REST Frontend<br/>• versitygw (SigV4, Path-Style)<br/>• 4MB Fixed Chunking &amp; SHA-256 Hashing<br/>• sync.Pool Buffer Pool &amp; Backpressure<br/>• Quorum Coordinator (W=2, Replication=3)<br/>• In-Memory Credential Cache (30s TTL)"]
+        GW_UI["Port :9001: Web Console &amp; BFF (embed.FS)<br/>• Serves Static Dashboard Assets<br/>• Browser JSON API (/api/*)<br/>• In-Process Upload Bridge"]
     end
 
     subgraph ControlPlane["Control Plane (auth-svc :9095)"]
@@ -33,9 +33,9 @@ flowchart TD
         AuthSvc --- AuthDB
     end
 
-    subgraph MetadataLayer["Metadata Cluster (Raft Consensus & State Machine)"]
+    subgraph MetadataLayer["Metadata Cluster (Raft Consensus &amp; State Machine)"]
         direction TB
-        M_Leader["metadata-svc Node 1 (Raft Leader)<br/>• BadgerDB LSM State Machine<br/>• In-Memory Heartbeat Registry<br/>• Embedded GC & Healing Workers<br/>• HTTP /healthz, /metrics, /admin/*"]
+        M_Leader["metadata-svc Node 1 (Raft Leader)<br/>• BadgerDB LSM State Machine<br/>• In-Memory Heartbeat Registry<br/>• Embedded GC &amp; Healing Workers<br/>• HTTP /healthz, /metrics, /admin/*"]
         M_Follower1["metadata-svc Node 2 (Raft Follower)<br/>• BadgerDB Replicated FSM"]
         M_Follower2["metadata-svc Node 3 (Raft Follower)<br/>• BadgerDB Replicated FSM"]
 
@@ -45,37 +45,33 @@ flowchart TD
 
     subgraph DataLayer["Storage Layer (Stateless Raw Chunk Nodes)"]
         direction LR
-        D1["data-svc Node 1 (:9101)<br/>• /data/staging/<uuid>.tmp<br/>• /data/chunks/xx/<sha256><br/>• Atomic Rename & fsync"]
-        D2["data-svc Node 2 (:9102)<br/>• /data/staging/<uuid>.tmp<br/>• /data/chunks/xx/<sha256><br/>• Atomic Rename & fsync"]
-        D3["data-svc Node 3 (:9103)<br/>• /data/staging/<uuid>.tmp<br/>• /data/chunks/xx/<sha256><br/>• Atomic Rename & fsync"]
+        D1["data-svc Node 1 (:9101)<br/>• /data/staging/&lt;uuid&gt;.tmp<br/>• /data/chunks/xx/&lt;sha256&gt;<br/>• Atomic Rename &amp; fsync"]
+        D2["data-svc Node 2 (:9102)<br/>• /data/staging/&lt;uuid&gt;.tmp<br/>• /data/chunks/xx/&lt;sha256&gt;<br/>• Atomic Rename &amp; fsync"]
+        D3["data-svc Node 3 (:9103)<br/>• /data/staging/&lt;uuid&gt;.tmp<br/>• /data/chunks/xx/&lt;sha256&gt;<br/>• Atomic Rename &amp; fsync"]
     end
 
-    %% Client connections
     S3Client -->|HTTP/REST :9000| GW_S3
     WebUser -->|HTTP/REST :9001| GW_UI
 
-    %% Gateway to Auth
-    GW_S3 -.->|Validate Key (Cache Miss)| AuthSvc
+    GW_S3 -.->|Validate Key Cache Miss| AuthSvc
     GW_UI -->|Auth & Key Management| AuthSvc
 
-    %% Gateway to backend
     GW_S3 -->|gRPC MetadataService| M_Leader
     GW_S3 -->|gRPC PutChunk/GetChunk| D1
     GW_S3 -->|gRPC PutChunk/GetChunk| D2
     GW_S3 -->|gRPC PutChunk/GetChunk| D3
     GW_UI -.->|Cluster Health :9071| M_Leader
 
-    %% Background interactions
     D1 -.->|Heartbeat 3s| M_Leader
     D2 -.->|Heartbeat 3s| M_Leader
     D3 -.->|Heartbeat 3s| M_Leader
 
-    M_Leader -.->|ReplicateChunk / DeleteChunk| D1
-    M_Leader -.->|ReplicateChunk / DeleteChunk| D2
-    M_Leader -.->|ReplicateChunk / DeleteChunk| D3
-    D1 <..->|Peer-to-Peer Copy| D2
-    D2 <..->|Peer-to-Peer Copy| D3
-    D1 <..->|Peer-to-Peer Copy| D3
+    M_Leader -.->|ReplicateChunk/DeleteChunk| D1
+    M_Leader -.->|ReplicateChunk/DeleteChunk| D2
+    M_Leader -.->|ReplicateChunk/DeleteChunk| D3
+    D1 <-.->|Peer-to-Peer Copy| D2
+    D2 <-.->|Peer-to-Peer Copy| D3
+    D1 <-.->|Peer-to-Peer Copy| D3
 ```
 
 ---
@@ -252,13 +248,13 @@ Background maintenance runs directly on the active **`metadata-svc` Raft leader*
 ```mermaid
 flowchart TD
     subgraph RegistryOps["1. Node Discovery & Heartbeat Registry"]
-        DataNodes["data-svc Nodes [1..N]"] -->|Heartbeat every 3s<br/>(Disk Free/Total)| H_Reg["In-Memory Heartbeat Registry<br/>(Bypasses Raft log)"]
-        H_Reg -->|Missed 3 heartbeats / 15s| NodeDown["Mark Node DEGRADED / OFFLINE"]
+        DataNodes["data-svc Nodes [1..N]"] -->|"Heartbeat every 3s<br/>(Disk Free/Total)"| H_Reg["In-Memory Heartbeat Registry<br/>(Bypasses Raft log)"]
+        H_Reg -->|"Missed 3 heartbeats / 15s"| NodeDown["Mark Node DEGRADED / OFFLINE"]
         NodeDown -->|Exclude from placement| Placement["Capacity-Aware Placement<br/>(gateway-svc queries with 5-10s TTL)"]
     end
 
     subgraph HealingOps["2. Active Replica Healing Worker (Leader-Only)"]
-        ScanUnder["Scan BadgerDB for chunks with len(Nodes) < 3"]
+        ScanUnder["Scan BadgerDB for chunks with len(Nodes) &lt; 3"]
         ScanUnder --> PickTarget["Pick healthy target node from Heartbeat Registry"]
         PickTarget --> InstructRep["Instruct existing replica via ReplicateChunk RPC"]
         InstructRep --> P2PCopy["Peer-to-Peer Chunk Copy<br/>(data-svc -> data-svc)"]
@@ -266,15 +262,15 @@ flowchart TD
     end
 
     subgraph GCOps["3. Quarantine Garbage Collection Worker (Leader-Only)"]
-        ScanOrphan["Scan BadgerDB for ChunkLocations with:<br/>• RefCount == 0<br/>• time.Since(OrphanedAt) > 24 Hours"]
+        ScanOrphan["Scan BadgerDB for ChunkLocations with:<br/>• RefCount == 0<br/>• time.Since(OrphanedAt) &gt; 24 Hours"]
         ScanOrphan --> RateLimit["Token Bucket Rate Limiter<br/>(e.g., 50 chunks/sec)"]
         RateLimit --> SendDelete["Send DeleteChunk RPC to holding data-svc nodes"]
-        SendDelete --> PurgeDisk["data-svc removes /data/chunks/xx/<sha256>"]
+        SendDelete --> PurgeDisk["data-svc removes /data/chunks/xx/&lt;sha256&gt;"]
         PurgeDisk --> ProposeRemove["Propose RemoveChunkLocations through Raft"]
     end
 
     subgraph MultipartOps["4. Abandoned Multipart Upload Cleanup (Leader-Only)"]
-        ScanMP["Scan pending multipart manifests with:<br/>• Status == 'pending'<br/>• time.Since(CreatedAt) > 24 Hours"]
+        ScanMP["Scan pending multipart manifests with:<br/>• Status == 'pending'<br/>• time.Since(CreatedAt) &gt; 24 Hours"]
         ScanMP --> AbortMP["Propose AbortMultipart through Raft"]
         AbortMP --> DecrChunks["Decrement chunk RefCounts<br/>(Unreferenced chunks enter 24h quarantine)"]
     end
