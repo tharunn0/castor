@@ -9,8 +9,8 @@ Minimal reference for Castor's storage layouts, key-value schemas, and transacti
 | Path | Engine | Purpose | Durability |
 |---|---|---|---|
 | `/data/postgres/` (or `castor_auth.db`) | PostgreSQL / SQLite | User accounts, password hashes, and S3 API credentials | Managed by RDB WAL / ACID |
-| `/data/badger/raft/` | BadgerDB | Raft WAL & stable store (term, vote) | `SyncWrites: true` |
-| `/data/badger/state/` | BadgerDB | Replicated FSM metadata store | Managed by Raft FSM commits |
+| `/data/raft/raft.db` | `raft-boltdb` (B+Tree) | Raft WAL & stable store (term, vote) | POSIX `fsync` on commit |
+| `/data/badger/state/` | BadgerDB (LSM) | Replicated FSM metadata store | Managed by Raft FSM commits |
 | `/data/staging/` | Local POSIX | In-flight upload chunks (`<uuid>.tmp`) | Swept on node startup |
 | `/data/chunks/xx/<sha256>` | Local POSIX | Committed 4MB chunks (2-hex prefix sharded) | Atomic `os.Rename` + parent `dir.Sync()` |
 

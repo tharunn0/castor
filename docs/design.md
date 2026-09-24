@@ -44,7 +44,7 @@ Castor decouples **stateless protocol & console ingress**, **identity management
    - Exposes internal validation endpoints for `gateway-svc` SigV4 signature verification.
 
 3. **`metadata-svc` (Consensus & Metadata, Ports `:9091`-`:9093`, Admin `:9071`-`:9073`)**:
-   - 3-node Raft consensus cluster backed by pure-Go BadgerDB LSM storage (`/raft/` WAL and `/state/` replicated FSM).
+   - 3-node Raft consensus cluster backed by `raft-boltdb` B+Tree storage (`/data/raft/raft.db` WAL/stable store) and pure-Go BadgerDB LSM storage (`/data/badger/state/` replicated FSM).
    - Manages bucket catalogs, object manifests (with user attribution `owner_id`), chunk locations, and an ephemeral in-memory storage node heartbeat registry.
    - Raft leader runs embedded background workers: active replica healing, 24-hour quarantine GC, and multipart expiration.
 

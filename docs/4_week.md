@@ -5,7 +5,7 @@
 ## Topology
 - **`gateway-svc`**: Stateless dual-port front door: S3 REST frontend (`:9000` via embedded `versitygw`) + Embedded Web Console & BFF (`:9001` via Go `embed.FS`).
 - **`auth-svc`**: Identity and credential provider (`:9095`) backed by PostgreSQL or SQLite (`users` and `s3_credentials`).
-- **`metadata-svc`**: 3-node Raft consensus cluster backed by BadgerDB (`/raft/` WAL, `/state/` FSM with user attribution `owner_id`).
+- **`metadata-svc`**: 3-node Raft consensus cluster backed by `raft-boltdb` (`/data/raft/raft.db` WAL/stable store) and BadgerDB (`/data/badger/state/` FSM with user attribution `owner_id`).
 - **`data-svc`**: Raw 4MB chunk store on local disk (`/data/chunks/xx/<sha256>`).
 
 ---
@@ -17,7 +17,7 @@
   - gRPC `DataService`: `PutChunk` (stream + verify SHA-256), `GetChunk`, `DeleteChunk`, `ReplicateChunk` (P2P copy), `HealthCheck`.
   - 3-second heartbeat loop reporting capacity telemetry to `metadata-svc`.
 - [ ] **`metadata-svc` Consensus:**
-  - Dual BadgerDB instances: `/data/badger/raft/` (`SyncWrites: true` for WAL) and `/data/badger/state/` (FSM).
+  - Storage engines: `raft-boltdb` for consensus WAL & stable store (`/data/raft/raft.db`) and BadgerDB for replicated FSM (`/data/badger/state/`).
   - 3-node `hashicorp/raft` bootstrap with custom FSM (`Apply`, `Snapshot`, `Restore`).
   - In-memory heartbeat registry (Raft bypass).
   - gRPC `MetadataService`: `CheckBucketExists`, bucket CRUD (with `owner_id`), `CheckChunks` (dedup), atomic `CommitManifest`, `GetManifest`, `DeleteManifest`.
