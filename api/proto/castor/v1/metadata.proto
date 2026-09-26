@@ -44,6 +44,7 @@ service MetadataService {
 message CreateBucketMetadataRequest {
   string bucket = 1;
   map<string, string> tags = 2;
+  string owner_id = 3; // User UUID from Auth DB
 }
 
 message CreateBucketMetadataResponse {
@@ -91,7 +92,7 @@ message CommitManifestRequest {
   string content_type = 5;
   repeated string chunk_ids = 6; // Ordered SHA-256 chunk digests
   repeated ChunkPlacement chunk_placements = 7; // Locations for new chunks
-  map<string, string> user_metadata = 8;
+  string owner_id = 8; // User UUID from Auth DB
 }
 
 message CommitManifestResponse {
@@ -114,7 +115,7 @@ message GetManifestResponse {
   google.protobuf.Timestamp created_at = 7;
   google.protobuf.Timestamp updated_at = 8;
   repeated ChunkWithLocations chunks = 9;
-  map<string, string> user_metadata = 10;
+  string owner_id = 10; // User UUID from Auth DB
 }
 
 message DeleteManifestRequest {
@@ -147,7 +148,7 @@ message InitiateMultipartMetaRequest {
   string bucket = 1;
   string key = 2;
   string content_type = 3;
-  map<string, string> user_metadata = 4;
+  string upload_id = 4; // Session UUID for deterministic Raft replication
 }
 
 message InitiateMultipartMetaResponse {

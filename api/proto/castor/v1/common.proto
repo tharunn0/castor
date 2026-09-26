@@ -47,6 +47,7 @@ message BucketRecord {
   google.protobuf.Timestamp created_at = 2;
   map<string, string> tags             = 3;
   bool is_deleted                      = 4;
+  string owner_id                      = 5; // User UUID from Auth DB
 }
 
 // ManifestRecord represents an object's metadata and its ordered chunk list.
@@ -60,7 +61,7 @@ message ManifestRecord {
   string status                           = 7; // "pending" | "committed" | "deleted"
   google.protobuf.Timestamp created_at    = 8;
   google.protobuf.Timestamp updated_at    = 9;
-  map<string, string> user_metadata       = 10;
+  string owner_id                         = 10; // User UUID from Auth DB
 }
 
 // ChunkLocationRecord tracks content-addressed chunk references and replica locations.
@@ -80,7 +81,6 @@ message MultipartRecord {
   string content_type                  = 4;
   string status                        = 5; // "pending" | "completed" | "aborted"
   google.protobuf.Timestamp created_at = 6;
-  map<string, string> user_metadata    = 7;
 }
 
 // PartRecord represents an individual uploaded part in a multipart session.

@@ -86,8 +86,7 @@ message ManifestRecord {
   string status = 7;               // "pending" | "committed" | "deleted"
   google.protobuf.Timestamp created_at = 8;
   google.protobuf.Timestamp updated_at = 9;
-  map<string, string> user_metadata = 10;
-  string owner_id = 11;            // User UUID from Auth DB
+  string owner_id = 10;            // User UUID from Auth DB
 }
 
 message ChunkLocationRecord {

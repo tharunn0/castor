@@ -26,6 +26,7 @@ type CreateBucketMetadataRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Bucket        string                 `protobuf:"bytes,1,opt,name=bucket,proto3" json:"bucket,omitempty"`
 	Tags          map[string]string      `protobuf:"bytes,2,rep,name=tags,proto3" json:"tags,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	OwnerId       string                 `protobuf:"bytes,3,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"` // User UUID from Auth DB
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -72,6 +73,13 @@ func (x *CreateBucketMetadataRequest) GetTags() map[string]string {
 		return x.Tags
 	}
 	return nil
+}
+
+func (x *CreateBucketMetadataRequest) GetOwnerId() string {
+	if x != nil {
+		return x.OwnerId
+	}
+	return ""
 }
 
 type CreateBucketMetadataResponse struct {
@@ -479,7 +487,7 @@ type CommitManifestRequest struct {
 	ContentType     string                 `protobuf:"bytes,5,opt,name=content_type,json=contentType,proto3" json:"content_type,omitempty"`
 	ChunkIds        []string               `protobuf:"bytes,6,rep,name=chunk_ids,json=chunkIds,proto3" json:"chunk_ids,omitempty"`                      // Ordered SHA-256 chunk digests
 	ChunkPlacements []*ChunkPlacement      `protobuf:"bytes,7,rep,name=chunk_placements,json=chunkPlacements,proto3" json:"chunk_placements,omitempty"` // Locations for new chunks
-	UserMetadata    map[string]string      `protobuf:"bytes,8,rep,name=user_metadata,json=userMetadata,proto3" json:"user_metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	OwnerId         string                 `protobuf:"bytes,8,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`                         // User UUID from Auth DB
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -563,11 +571,11 @@ func (x *CommitManifestRequest) GetChunkPlacements() []*ChunkPlacement {
 	return nil
 }
 
-func (x *CommitManifestRequest) GetUserMetadata() map[string]string {
+func (x *CommitManifestRequest) GetOwnerId() string {
 	if x != nil {
-		return x.UserMetadata
+		return x.OwnerId
 	}
-	return nil
+	return ""
 }
 
 type CommitManifestResponse struct {
@@ -685,7 +693,7 @@ type GetManifestResponse struct {
 	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	Chunks        []*ChunkWithLocations  `protobuf:"bytes,9,rep,name=chunks,proto3" json:"chunks,omitempty"`
-	UserMetadata  map[string]string      `protobuf:"bytes,10,rep,name=user_metadata,json=userMetadata,proto3" json:"user_metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	OwnerId       string                 `protobuf:"bytes,10,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"` // User UUID from Auth DB
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -783,11 +791,11 @@ func (x *GetManifestResponse) GetChunks() []*ChunkWithLocations {
 	return nil
 }
 
-func (x *GetManifestResponse) GetUserMetadata() map[string]string {
+func (x *GetManifestResponse) GetOwnerId() string {
 	if x != nil {
-		return x.UserMetadata
+		return x.OwnerId
 	}
-	return nil
+	return ""
 }
 
 type DeleteManifestRequest struct {
@@ -1035,7 +1043,7 @@ type InitiateMultipartMetaRequest struct {
 	Bucket        string                 `protobuf:"bytes,1,opt,name=bucket,proto3" json:"bucket,omitempty"`
 	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
 	ContentType   string                 `protobuf:"bytes,3,opt,name=content_type,json=contentType,proto3" json:"content_type,omitempty"`
-	UserMetadata  map[string]string      `protobuf:"bytes,4,rep,name=user_metadata,json=userMetadata,proto3" json:"user_metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	UploadId      string                 `protobuf:"bytes,4,opt,name=upload_id,json=uploadId,proto3" json:"upload_id,omitempty"` // Session UUID for deterministic Raft replication
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1091,11 +1099,11 @@ func (x *InitiateMultipartMetaRequest) GetContentType() string {
 	return ""
 }
 
-func (x *InitiateMultipartMetaRequest) GetUserMetadata() map[string]string {
+func (x *InitiateMultipartMetaRequest) GetUploadId() string {
 	if x != nil {
-		return x.UserMetadata
+		return x.UploadId
 	}
-	return nil
+	return ""
 }
 
 type InitiateMultipartMetaResponse struct {
@@ -2082,10 +2090,11 @@ var File_castor_v1_metadata_proto protoreflect.FileDescriptor
 
 const file_castor_v1_metadata_proto_rawDesc = "" +
 	"\n" +
-	"\x18castor/v1/metadata.proto\x12\tcastor.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x16castor/v1/common.proto\"\xb4\x01\n" +
+	"\x18castor/v1/metadata.proto\x12\tcastor.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x16castor/v1/common.proto\"\xcf\x01\n" +
 	"\x1bCreateBucketMetadataRequest\x12\x16\n" +
 	"\x06bucket\x18\x01 \x01(\tR\x06bucket\x12D\n" +
-	"\x04tags\x18\x02 \x03(\v20.castor.v1.CreateBucketMetadataRequest.TagsEntryR\x04tags\x1a7\n" +
+	"\x04tags\x18\x02 \x03(\v20.castor.v1.CreateBucketMetadataRequest.TagsEntryR\x04tags\x12\x19\n" +
+	"\bowner_id\x18\x03 \x01(\tR\aownerId\x1a7\n" +
 	"\tTagsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"s\n" +
@@ -2110,7 +2119,7 @@ const file_castor_v1_metadata_proto_rawDesc = "" +
 	"\x0fexisting_chunks\x18\x01 \x03(\v22.castor.v1.CheckChunksResponse.ExistingChunksEntryR\x0eexistingChunks\x1aA\n" +
 	"\x13ExistingChunksEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\bR\x05value:\x028\x01\"\x89\x03\n" +
+	"\x05value\x18\x02 \x01(\bR\x05value:\x028\x01\"\x8a\x02\n" +
 	"\x15CommitManifestRequest\x12\x16\n" +
 	"\x06bucket\x18\x01 \x01(\tR\x06bucket\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x12\x12\n" +
@@ -2118,17 +2127,14 @@ const file_castor_v1_metadata_proto_rawDesc = "" +
 	"\x04etag\x18\x04 \x01(\tR\x04etag\x12!\n" +
 	"\fcontent_type\x18\x05 \x01(\tR\vcontentType\x12\x1b\n" +
 	"\tchunk_ids\x18\x06 \x03(\tR\bchunkIds\x12D\n" +
-	"\x10chunk_placements\x18\a \x03(\v2\x19.castor.v1.ChunkPlacementR\x0fchunkPlacements\x12W\n" +
-	"\ruser_metadata\x18\b \x03(\v22.castor.v1.CommitManifestRequest.UserMetadataEntryR\fuserMetadata\x1a?\n" +
-	"\x11UserMetadataEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"u\n" +
+	"\x10chunk_placements\x18\a \x03(\v2\x19.castor.v1.ChunkPlacementR\x0fchunkPlacements\x12\x19\n" +
+	"\bowner_id\x18\b \x01(\tR\aownerId\"u\n" +
 	"\x16CommitManifestResponse\x12\x1c\n" +
 	"\tcommitted\x18\x01 \x01(\bR\tcommitted\x12=\n" +
 	"\fcommitted_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\vcommittedAt\">\n" +
 	"\x12GetManifestRequest\x12\x16\n" +
 	"\x06bucket\x18\x01 \x01(\tR\x06bucket\x12\x10\n" +
-	"\x03key\x18\x02 \x01(\tR\x03key\"\xe7\x03\n" +
+	"\x03key\x18\x02 \x01(\tR\x03key\"\xea\x02\n" +
 	"\x13GetManifestResponse\x12\x16\n" +
 	"\x06bucket\x18\x01 \x01(\tR\x06bucket\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x12\x12\n" +
@@ -2140,12 +2146,9 @@ const file_castor_v1_metadata_proto_rawDesc = "" +
 	"created_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"updated_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x125\n" +
-	"\x06chunks\x18\t \x03(\v2\x1d.castor.v1.ChunkWithLocationsR\x06chunks\x12U\n" +
-	"\ruser_metadata\x18\n" +
-	" \x03(\v20.castor.v1.GetManifestResponse.UserMetadataEntryR\fuserMetadata\x1a?\n" +
-	"\x11UserMetadataEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"A\n" +
+	"\x06chunks\x18\t \x03(\v2\x1d.castor.v1.ChunkWithLocationsR\x06chunks\x12\x19\n" +
+	"\bowner_id\x18\n" +
+	" \x01(\tR\aownerId\"A\n" +
 	"\x15DeleteManifestRequest\x12\x16\n" +
 	"\x06bucket\x18\x01 \x01(\tR\x06bucket\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\"2\n" +
@@ -2162,15 +2165,12 @@ const file_castor_v1_metadata_proto_rawDesc = "" +
 	"\x0fcommon_prefixes\x18\x02 \x03(\tR\x0ecommonPrefixes\x12\x1f\n" +
 	"\vnext_marker\x18\x03 \x01(\tR\n" +
 	"nextMarker\x12!\n" +
-	"\fis_truncated\x18\x04 \x01(\bR\visTruncated\"\x8c\x02\n" +
+	"\fis_truncated\x18\x04 \x01(\bR\visTruncated\"\x88\x01\n" +
 	"\x1cInitiateMultipartMetaRequest\x12\x16\n" +
 	"\x06bucket\x18\x01 \x01(\tR\x06bucket\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x12!\n" +
-	"\fcontent_type\x18\x03 \x01(\tR\vcontentType\x12^\n" +
-	"\ruser_metadata\x18\x04 \x03(\v29.castor.v1.InitiateMultipartMetaRequest.UserMetadataEntryR\fuserMetadata\x1a?\n" +
-	"\x11UserMetadataEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"w\n" +
+	"\fcontent_type\x18\x03 \x01(\tR\vcontentType\x12\x1b\n" +
+	"\tupload_id\x18\x04 \x01(\tR\buploadId\"w\n" +
 	"\x1dInitiateMultipartMetaResponse\x12\x1b\n" +
 	"\tupload_id\x18\x01 \x01(\tR\buploadId\x129\n" +
 	"\n" +
@@ -2273,7 +2273,7 @@ func file_castor_v1_metadata_proto_rawDescGZIP() []byte {
 	return file_castor_v1_metadata_proto_rawDescData
 }
 
-var file_castor_v1_metadata_proto_msgTypes = make([]protoimpl.MessageInfo, 43)
+var file_castor_v1_metadata_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
 var file_castor_v1_metadata_proto_goTypes = []any{
 	(*CreateBucketMetadataRequest)(nil),   // 0: castor.v1.CreateBucketMetadataRequest
 	(*CreateBucketMetadataResponse)(nil),  // 1: castor.v1.CreateBucketMetadataResponse
@@ -2315,78 +2315,72 @@ var file_castor_v1_metadata_proto_goTypes = []any{
 	(*TriggerReadRepairResponse)(nil),     // 37: castor.v1.TriggerReadRepairResponse
 	nil,                                   // 38: castor.v1.CreateBucketMetadataRequest.TagsEntry
 	nil,                                   // 39: castor.v1.CheckChunksResponse.ExistingChunksEntry
-	nil,                                   // 40: castor.v1.CommitManifestRequest.UserMetadataEntry
-	nil,                                   // 41: castor.v1.GetManifestResponse.UserMetadataEntry
-	nil,                                   // 42: castor.v1.InitiateMultipartMetaRequest.UserMetadataEntry
-	(*timestamppb.Timestamp)(nil),         // 43: google.protobuf.Timestamp
-	(*BucketRecord)(nil),                  // 44: castor.v1.BucketRecord
-	(*ChunkPlacement)(nil),                // 45: castor.v1.ChunkPlacement
-	(*ChunkWithLocations)(nil),            // 46: castor.v1.ChunkWithLocations
-	(*ManifestRecord)(nil),                // 47: castor.v1.ManifestRecord
-	(*NodeCapacity)(nil),                  // 48: castor.v1.NodeCapacity
+	(*timestamppb.Timestamp)(nil),         // 40: google.protobuf.Timestamp
+	(*BucketRecord)(nil),                  // 41: castor.v1.BucketRecord
+	(*ChunkPlacement)(nil),                // 42: castor.v1.ChunkPlacement
+	(*ChunkWithLocations)(nil),            // 43: castor.v1.ChunkWithLocations
+	(*ManifestRecord)(nil),                // 44: castor.v1.ManifestRecord
+	(*NodeCapacity)(nil),                  // 45: castor.v1.NodeCapacity
 }
 var file_castor_v1_metadata_proto_depIdxs = []int32{
 	38, // 0: castor.v1.CreateBucketMetadataRequest.tags:type_name -> castor.v1.CreateBucketMetadataRequest.TagsEntry
-	43, // 1: castor.v1.CreateBucketMetadataResponse.created_at:type_name -> google.protobuf.Timestamp
-	44, // 2: castor.v1.ListBucketsMetadataResponse.buckets:type_name -> castor.v1.BucketRecord
+	40, // 1: castor.v1.CreateBucketMetadataResponse.created_at:type_name -> google.protobuf.Timestamp
+	41, // 2: castor.v1.ListBucketsMetadataResponse.buckets:type_name -> castor.v1.BucketRecord
 	39, // 3: castor.v1.CheckChunksResponse.existing_chunks:type_name -> castor.v1.CheckChunksResponse.ExistingChunksEntry
-	45, // 4: castor.v1.CommitManifestRequest.chunk_placements:type_name -> castor.v1.ChunkPlacement
-	40, // 5: castor.v1.CommitManifestRequest.user_metadata:type_name -> castor.v1.CommitManifestRequest.UserMetadataEntry
-	43, // 6: castor.v1.CommitManifestResponse.committed_at:type_name -> google.protobuf.Timestamp
-	43, // 7: castor.v1.GetManifestResponse.created_at:type_name -> google.protobuf.Timestamp
-	43, // 8: castor.v1.GetManifestResponse.updated_at:type_name -> google.protobuf.Timestamp
-	46, // 9: castor.v1.GetManifestResponse.chunks:type_name -> castor.v1.ChunkWithLocations
-	41, // 10: castor.v1.GetManifestResponse.user_metadata:type_name -> castor.v1.GetManifestResponse.UserMetadataEntry
-	47, // 11: castor.v1.ListManifestsResponse.manifests:type_name -> castor.v1.ManifestRecord
-	42, // 12: castor.v1.InitiateMultipartMetaRequest.user_metadata:type_name -> castor.v1.InitiateMultipartMetaRequest.UserMetadataEntry
-	43, // 13: castor.v1.InitiateMultipartMetaResponse.created_at:type_name -> google.protobuf.Timestamp
-	45, // 14: castor.v1.CommitPartMetaRequest.chunk_placements:type_name -> castor.v1.ChunkPlacement
-	22, // 15: castor.v1.CompleteMultipartMetaRequest.parts:type_name -> castor.v1.PartSummary
-	43, // 16: castor.v1.HeartbeatRequest.timestamp:type_name -> google.protobuf.Timestamp
-	48, // 17: castor.v1.GetActiveNodesResponse.nodes:type_name -> castor.v1.NodeCapacity
-	0,  // 18: castor.v1.MetadataService.CreateBucket:input_type -> castor.v1.CreateBucketMetadataRequest
-	2,  // 19: castor.v1.MetadataService.DeleteBucket:input_type -> castor.v1.DeleteBucketMetadataRequest
-	4,  // 20: castor.v1.MetadataService.ListBuckets:input_type -> castor.v1.ListBucketsMetadataRequest
-	6,  // 21: castor.v1.MetadataService.CheckBucketExists:input_type -> castor.v1.CheckBucketExistsRequest
-	8,  // 22: castor.v1.MetadataService.CheckChunks:input_type -> castor.v1.CheckChunksRequest
-	10, // 23: castor.v1.MetadataService.CommitManifest:input_type -> castor.v1.CommitManifestRequest
-	12, // 24: castor.v1.MetadataService.GetManifest:input_type -> castor.v1.GetManifestRequest
-	14, // 25: castor.v1.MetadataService.DeleteManifest:input_type -> castor.v1.DeleteManifestRequest
-	16, // 26: castor.v1.MetadataService.ListManifests:input_type -> castor.v1.ListManifestsRequest
-	18, // 27: castor.v1.MetadataService.InitiateMultipart:input_type -> castor.v1.InitiateMultipartMetaRequest
-	20, // 28: castor.v1.MetadataService.CommitPart:input_type -> castor.v1.CommitPartMetaRequest
-	23, // 29: castor.v1.MetadataService.CompleteMultipart:input_type -> castor.v1.CompleteMultipartMetaRequest
-	24, // 30: castor.v1.MetadataService.AbortMultipart:input_type -> castor.v1.AbortMultipartMetaRequest
-	26, // 31: castor.v1.MetadataService.RegisterNode:input_type -> castor.v1.RegisterNodeRequest
-	28, // 32: castor.v1.MetadataService.Heartbeat:input_type -> castor.v1.HeartbeatRequest
-	30, // 33: castor.v1.MetadataService.GetActiveNodes:input_type -> castor.v1.GetActiveNodesRequest
-	32, // 34: castor.v1.MetadataService.UpdateChunkLocation:input_type -> castor.v1.UpdateChunkLocationRequest
-	34, // 35: castor.v1.MetadataService.RemoveChunkLocations:input_type -> castor.v1.RemoveChunkLocationsRequest
-	36, // 36: castor.v1.MetadataService.TriggerReadRepair:input_type -> castor.v1.TriggerReadRepairRequest
-	1,  // 37: castor.v1.MetadataService.CreateBucket:output_type -> castor.v1.CreateBucketMetadataResponse
-	3,  // 38: castor.v1.MetadataService.DeleteBucket:output_type -> castor.v1.DeleteBucketMetadataResponse
-	5,  // 39: castor.v1.MetadataService.ListBuckets:output_type -> castor.v1.ListBucketsMetadataResponse
-	7,  // 40: castor.v1.MetadataService.CheckBucketExists:output_type -> castor.v1.CheckBucketExistsResponse
-	9,  // 41: castor.v1.MetadataService.CheckChunks:output_type -> castor.v1.CheckChunksResponse
-	11, // 42: castor.v1.MetadataService.CommitManifest:output_type -> castor.v1.CommitManifestResponse
-	13, // 43: castor.v1.MetadataService.GetManifest:output_type -> castor.v1.GetManifestResponse
-	15, // 44: castor.v1.MetadataService.DeleteManifest:output_type -> castor.v1.DeleteManifestResponse
-	17, // 45: castor.v1.MetadataService.ListManifests:output_type -> castor.v1.ListManifestsResponse
-	19, // 46: castor.v1.MetadataService.InitiateMultipart:output_type -> castor.v1.InitiateMultipartMetaResponse
-	21, // 47: castor.v1.MetadataService.CommitPart:output_type -> castor.v1.CommitPartMetaResponse
-	11, // 48: castor.v1.MetadataService.CompleteMultipart:output_type -> castor.v1.CommitManifestResponse
-	25, // 49: castor.v1.MetadataService.AbortMultipart:output_type -> castor.v1.AbortMultipartMetaResponse
-	27, // 50: castor.v1.MetadataService.RegisterNode:output_type -> castor.v1.RegisterNodeResponse
-	29, // 51: castor.v1.MetadataService.Heartbeat:output_type -> castor.v1.HeartbeatResponse
-	31, // 52: castor.v1.MetadataService.GetActiveNodes:output_type -> castor.v1.GetActiveNodesResponse
-	33, // 53: castor.v1.MetadataService.UpdateChunkLocation:output_type -> castor.v1.UpdateChunkLocationResponse
-	35, // 54: castor.v1.MetadataService.RemoveChunkLocations:output_type -> castor.v1.RemoveChunkLocationsResponse
-	37, // 55: castor.v1.MetadataService.TriggerReadRepair:output_type -> castor.v1.TriggerReadRepairResponse
-	37, // [37:56] is the sub-list for method output_type
-	18, // [18:37] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	42, // 4: castor.v1.CommitManifestRequest.chunk_placements:type_name -> castor.v1.ChunkPlacement
+	40, // 5: castor.v1.CommitManifestResponse.committed_at:type_name -> google.protobuf.Timestamp
+	40, // 6: castor.v1.GetManifestResponse.created_at:type_name -> google.protobuf.Timestamp
+	40, // 7: castor.v1.GetManifestResponse.updated_at:type_name -> google.protobuf.Timestamp
+	43, // 8: castor.v1.GetManifestResponse.chunks:type_name -> castor.v1.ChunkWithLocations
+	44, // 9: castor.v1.ListManifestsResponse.manifests:type_name -> castor.v1.ManifestRecord
+	40, // 10: castor.v1.InitiateMultipartMetaResponse.created_at:type_name -> google.protobuf.Timestamp
+	42, // 11: castor.v1.CommitPartMetaRequest.chunk_placements:type_name -> castor.v1.ChunkPlacement
+	22, // 12: castor.v1.CompleteMultipartMetaRequest.parts:type_name -> castor.v1.PartSummary
+	40, // 13: castor.v1.HeartbeatRequest.timestamp:type_name -> google.protobuf.Timestamp
+	45, // 14: castor.v1.GetActiveNodesResponse.nodes:type_name -> castor.v1.NodeCapacity
+	0,  // 15: castor.v1.MetadataService.CreateBucket:input_type -> castor.v1.CreateBucketMetadataRequest
+	2,  // 16: castor.v1.MetadataService.DeleteBucket:input_type -> castor.v1.DeleteBucketMetadataRequest
+	4,  // 17: castor.v1.MetadataService.ListBuckets:input_type -> castor.v1.ListBucketsMetadataRequest
+	6,  // 18: castor.v1.MetadataService.CheckBucketExists:input_type -> castor.v1.CheckBucketExistsRequest
+	8,  // 19: castor.v1.MetadataService.CheckChunks:input_type -> castor.v1.CheckChunksRequest
+	10, // 20: castor.v1.MetadataService.CommitManifest:input_type -> castor.v1.CommitManifestRequest
+	12, // 21: castor.v1.MetadataService.GetManifest:input_type -> castor.v1.GetManifestRequest
+	14, // 22: castor.v1.MetadataService.DeleteManifest:input_type -> castor.v1.DeleteManifestRequest
+	16, // 23: castor.v1.MetadataService.ListManifests:input_type -> castor.v1.ListManifestsRequest
+	18, // 24: castor.v1.MetadataService.InitiateMultipart:input_type -> castor.v1.InitiateMultipartMetaRequest
+	20, // 25: castor.v1.MetadataService.CommitPart:input_type -> castor.v1.CommitPartMetaRequest
+	23, // 26: castor.v1.MetadataService.CompleteMultipart:input_type -> castor.v1.CompleteMultipartMetaRequest
+	24, // 27: castor.v1.MetadataService.AbortMultipart:input_type -> castor.v1.AbortMultipartMetaRequest
+	26, // 28: castor.v1.MetadataService.RegisterNode:input_type -> castor.v1.RegisterNodeRequest
+	28, // 29: castor.v1.MetadataService.Heartbeat:input_type -> castor.v1.HeartbeatRequest
+	30, // 30: castor.v1.MetadataService.GetActiveNodes:input_type -> castor.v1.GetActiveNodesRequest
+	32, // 31: castor.v1.MetadataService.UpdateChunkLocation:input_type -> castor.v1.UpdateChunkLocationRequest
+	34, // 32: castor.v1.MetadataService.RemoveChunkLocations:input_type -> castor.v1.RemoveChunkLocationsRequest
+	36, // 33: castor.v1.MetadataService.TriggerReadRepair:input_type -> castor.v1.TriggerReadRepairRequest
+	1,  // 34: castor.v1.MetadataService.CreateBucket:output_type -> castor.v1.CreateBucketMetadataResponse
+	3,  // 35: castor.v1.MetadataService.DeleteBucket:output_type -> castor.v1.DeleteBucketMetadataResponse
+	5,  // 36: castor.v1.MetadataService.ListBuckets:output_type -> castor.v1.ListBucketsMetadataResponse
+	7,  // 37: castor.v1.MetadataService.CheckBucketExists:output_type -> castor.v1.CheckBucketExistsResponse
+	9,  // 38: castor.v1.MetadataService.CheckChunks:output_type -> castor.v1.CheckChunksResponse
+	11, // 39: castor.v1.MetadataService.CommitManifest:output_type -> castor.v1.CommitManifestResponse
+	13, // 40: castor.v1.MetadataService.GetManifest:output_type -> castor.v1.GetManifestResponse
+	15, // 41: castor.v1.MetadataService.DeleteManifest:output_type -> castor.v1.DeleteManifestResponse
+	17, // 42: castor.v1.MetadataService.ListManifests:output_type -> castor.v1.ListManifestsResponse
+	19, // 43: castor.v1.MetadataService.InitiateMultipart:output_type -> castor.v1.InitiateMultipartMetaResponse
+	21, // 44: castor.v1.MetadataService.CommitPart:output_type -> castor.v1.CommitPartMetaResponse
+	11, // 45: castor.v1.MetadataService.CompleteMultipart:output_type -> castor.v1.CommitManifestResponse
+	25, // 46: castor.v1.MetadataService.AbortMultipart:output_type -> castor.v1.AbortMultipartMetaResponse
+	27, // 47: castor.v1.MetadataService.RegisterNode:output_type -> castor.v1.RegisterNodeResponse
+	29, // 48: castor.v1.MetadataService.Heartbeat:output_type -> castor.v1.HeartbeatResponse
+	31, // 49: castor.v1.MetadataService.GetActiveNodes:output_type -> castor.v1.GetActiveNodesResponse
+	33, // 50: castor.v1.MetadataService.UpdateChunkLocation:output_type -> castor.v1.UpdateChunkLocationResponse
+	35, // 51: castor.v1.MetadataService.RemoveChunkLocations:output_type -> castor.v1.RemoveChunkLocationsResponse
+	37, // 52: castor.v1.MetadataService.TriggerReadRepair:output_type -> castor.v1.TriggerReadRepairResponse
+	34, // [34:53] is the sub-list for method output_type
+	15, // [15:34] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_castor_v1_metadata_proto_init() }
@@ -2401,7 +2395,7 @@ func file_castor_v1_metadata_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_castor_v1_metadata_proto_rawDesc), len(file_castor_v1_metadata_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   43,
+			NumMessages:   40,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -297,6 +297,7 @@ type BucketRecord struct {
 	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	Tags          map[string]string      `protobuf:"bytes,3,rep,name=tags,proto3" json:"tags,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	IsDeleted     bool                   `protobuf:"varint,4,opt,name=is_deleted,json=isDeleted,proto3" json:"is_deleted,omitempty"`
+	OwnerId       string                 `protobuf:"bytes,5,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"` // User UUID from Auth DB
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -359,6 +360,13 @@ func (x *BucketRecord) GetIsDeleted() bool {
 	return false
 }
 
+func (x *BucketRecord) GetOwnerId() string {
+	if x != nil {
+		return x.OwnerId
+	}
+	return ""
+}
+
 // ManifestRecord represents an object's metadata and its ordered chunk list.
 type ManifestRecord struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -371,7 +379,7 @@ type ManifestRecord struct {
 	Status        string                 `protobuf:"bytes,7,opt,name=status,proto3" json:"status,omitempty"`                     // "pending" | "committed" | "deleted"
 	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	UserMetadata  map[string]string      `protobuf:"bytes,10,rep,name=user_metadata,json=userMetadata,proto3" json:"user_metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	OwnerId       string                 `protobuf:"bytes,10,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"` // User UUID from Auth DB
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -469,11 +477,11 @@ func (x *ManifestRecord) GetUpdatedAt() *timestamppb.Timestamp {
 	return nil
 }
 
-func (x *ManifestRecord) GetUserMetadata() map[string]string {
+func (x *ManifestRecord) GetOwnerId() string {
 	if x != nil {
-		return x.UserMetadata
+		return x.OwnerId
 	}
-	return nil
+	return ""
 }
 
 // ChunkLocationRecord tracks content-addressed chunk references and replica locations.
@@ -562,7 +570,6 @@ type MultipartRecord struct {
 	ContentType   string                 `protobuf:"bytes,4,opt,name=content_type,json=contentType,proto3" json:"content_type,omitempty"`
 	Status        string                 `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"` // "pending" | "completed" | "aborted"
 	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UserMetadata  map[string]string      `protobuf:"bytes,7,rep,name=user_metadata,json=userMetadata,proto3" json:"user_metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -635,13 +642,6 @@ func (x *MultipartRecord) GetStatus() string {
 func (x *MultipartRecord) GetCreatedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.CreatedAt
-	}
-	return nil
-}
-
-func (x *MultipartRecord) GetUserMetadata() map[string]string {
-	if x != nil {
-		return x.UserMetadata
 	}
 	return nil
 }
@@ -756,17 +756,18 @@ const file_castor_v1_common_proto_rawDesc = "" +
 	"\n" +
 	"chunk_hash\x18\x01 \x01(\tR\tchunkHash\x12%\n" +
 	"\x0enode_addresses\x18\x02 \x03(\tR\rnodeAddresses\x12\x12\n" +
-	"\x04size\x18\x03 \x01(\x03R\x04size\"\xec\x01\n" +
+	"\x04size\x18\x03 \x01(\x03R\x04size\"\x87\x02\n" +
 	"\fBucketRecord\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x129\n" +
 	"\n" +
 	"created_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x125\n" +
 	"\x04tags\x18\x03 \x03(\v2!.castor.v1.BucketRecord.TagsEntryR\x04tags\x12\x1d\n" +
 	"\n" +
-	"is_deleted\x18\x04 \x01(\bR\tisDeleted\x1a7\n" +
+	"is_deleted\x18\x04 \x01(\bR\tisDeleted\x12\x19\n" +
+	"\bowner_id\x18\x05 \x01(\tR\aownerId\x1a7\n" +
 	"\tTagsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc3\x03\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcb\x02\n" +
 	"\x0eManifestRecord\x12\x16\n" +
 	"\x06bucket\x18\x01 \x01(\tR\x06bucket\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x12\x12\n" +
@@ -778,12 +779,9 @@ const file_castor_v1_common_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12P\n" +
-	"\ruser_metadata\x18\n" +
-	" \x03(\v2+.castor.v1.ManifestRecord.UserMetadataEntryR\fuserMetadata\x1a?\n" +
-	"\x11UserMetadataEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb8\x01\n" +
+	"updated_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x19\n" +
+	"\bowner_id\x18\n" +
+	" \x01(\tR\aownerId\"\xb8\x01\n" +
 	"\x13ChunkLocationRecord\x12\x1d\n" +
 	"\n" +
 	"chunk_hash\x18\x01 \x01(\tR\tchunkHash\x12\x12\n" +
@@ -791,7 +789,7 @@ const file_castor_v1_common_proto_rawDesc = "" +
 	"\x05nodes\x18\x03 \x03(\tR\x05nodes\x12\x1b\n" +
 	"\tref_count\x18\x04 \x01(\x05R\brefCount\x12;\n" +
 	"\vorphaned_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"orphanedAt\"\xe2\x02\n" +
+	"orphanedAt\"\xce\x01\n" +
 	"\x0fMultipartRecord\x12\x1b\n" +
 	"\tupload_id\x18\x01 \x01(\tR\buploadId\x12\x16\n" +
 	"\x06bucket\x18\x02 \x01(\tR\x06bucket\x12\x10\n" +
@@ -799,11 +797,7 @@ const file_castor_v1_common_proto_rawDesc = "" +
 	"\fcontent_type\x18\x04 \x01(\tR\vcontentType\x12\x16\n" +
 	"\x06status\x18\x05 \x01(\tR\x06status\x129\n" +
 	"\n" +
-	"created_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12Q\n" +
-	"\ruser_metadata\x18\a \x03(\v2,.castor.v1.MultipartRecord.UserMetadataEntryR\fuserMetadata\x1a?\n" +
-	"\x11UserMetadataEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcc\x01\n" +
+	"created_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\xcc\x01\n" +
 	"\n" +
 	"PartRecord\x12\x1b\n" +
 	"\tupload_id\x18\x01 \x01(\tR\buploadId\x12\x1f\n" +
@@ -834,7 +828,7 @@ func file_castor_v1_common_proto_rawDescGZIP() []byte {
 }
 
 var file_castor_v1_common_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_castor_v1_common_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_castor_v1_common_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_castor_v1_common_proto_goTypes = []any{
 	(NodeStatus)(0),               // 0: castor.v1.NodeStatus
 	(*NodeCapacity)(nil),          // 1: castor.v1.NodeCapacity
@@ -846,27 +840,23 @@ var file_castor_v1_common_proto_goTypes = []any{
 	(*MultipartRecord)(nil),       // 7: castor.v1.MultipartRecord
 	(*PartRecord)(nil),            // 8: castor.v1.PartRecord
 	nil,                           // 9: castor.v1.BucketRecord.TagsEntry
-	nil,                           // 10: castor.v1.ManifestRecord.UserMetadataEntry
-	nil,                           // 11: castor.v1.MultipartRecord.UserMetadataEntry
-	(*timestamppb.Timestamp)(nil), // 12: google.protobuf.Timestamp
+	(*timestamppb.Timestamp)(nil), // 10: google.protobuf.Timestamp
 }
 var file_castor_v1_common_proto_depIdxs = []int32{
 	0,  // 0: castor.v1.NodeCapacity.status:type_name -> castor.v1.NodeStatus
-	12, // 1: castor.v1.NodeCapacity.last_seen:type_name -> google.protobuf.Timestamp
-	12, // 2: castor.v1.BucketRecord.created_at:type_name -> google.protobuf.Timestamp
+	10, // 1: castor.v1.NodeCapacity.last_seen:type_name -> google.protobuf.Timestamp
+	10, // 2: castor.v1.BucketRecord.created_at:type_name -> google.protobuf.Timestamp
 	9,  // 3: castor.v1.BucketRecord.tags:type_name -> castor.v1.BucketRecord.TagsEntry
-	12, // 4: castor.v1.ManifestRecord.created_at:type_name -> google.protobuf.Timestamp
-	12, // 5: castor.v1.ManifestRecord.updated_at:type_name -> google.protobuf.Timestamp
-	10, // 6: castor.v1.ManifestRecord.user_metadata:type_name -> castor.v1.ManifestRecord.UserMetadataEntry
-	12, // 7: castor.v1.ChunkLocationRecord.orphaned_at:type_name -> google.protobuf.Timestamp
-	12, // 8: castor.v1.MultipartRecord.created_at:type_name -> google.protobuf.Timestamp
-	11, // 9: castor.v1.MultipartRecord.user_metadata:type_name -> castor.v1.MultipartRecord.UserMetadataEntry
-	12, // 10: castor.v1.PartRecord.uploaded_at:type_name -> google.protobuf.Timestamp
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	10, // 4: castor.v1.ManifestRecord.created_at:type_name -> google.protobuf.Timestamp
+	10, // 5: castor.v1.ManifestRecord.updated_at:type_name -> google.protobuf.Timestamp
+	10, // 6: castor.v1.ChunkLocationRecord.orphaned_at:type_name -> google.protobuf.Timestamp
+	10, // 7: castor.v1.MultipartRecord.created_at:type_name -> google.protobuf.Timestamp
+	10, // 8: castor.v1.PartRecord.uploaded_at:type_name -> google.protobuf.Timestamp
+	9,  // [9:9] is the sub-list for method output_type
+	9,  // [9:9] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_castor_v1_common_proto_init() }
@@ -880,7 +870,7 @@ func file_castor_v1_common_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_castor_v1_common_proto_rawDesc), len(file_castor_v1_common_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   11,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
