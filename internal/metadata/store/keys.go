@@ -19,7 +19,6 @@ const (
 	PrefixMultipartPart = "multipart_part:"
 )
 
-// Bucket Keys: bucket:<bucket>
 func BucketKey(bucket string) []byte {
 	return []byte(PrefixBucket + bucket)
 }
@@ -40,7 +39,6 @@ func ParseBucketKey(key []byte) (string, error) {
 	return bucket, nil
 }
 
-// Manifest Keys: manifest:<bucket>:<key>
 func ManifestKey(bucket, objectKey string) []byte {
 	return []byte(PrefixManifest + bucket + ":" + objectKey)
 }
@@ -66,7 +64,6 @@ func ParseManifestKey(key []byte) (bucket string, objectKey string, err error) {
 	return parts[0], parts[1], nil
 }
 
-// Chunk Keys: chunk:<sha256>
 func ChunkKey(chunkHash string) []byte {
 	return []byte(PrefixChunk + chunkHash)
 }
@@ -87,7 +84,6 @@ func ParseChunkKey(key []byte) (string, error) {
 	return hash, nil
 }
 
-// Multipart Keys: multipart:<upload_id>
 func MultipartKey(uploadID string) []byte {
 	return []byte(PrefixMultipart + uploadID)
 }
@@ -108,7 +104,7 @@ func ParseMultipartKey(key []byte) (string, error) {
 	return uploadID, nil
 }
 
-// Multipart Part Keys: multipart_part:<upload_id>:<part_num> (5-digit zero-padded)
+// Zero-padded to 5 digits so byte comparison matches numerical part ordering in LSM iterators.
 func MultipartPartKey(uploadID string, partNum int32) []byte {
 	return fmt.Appendf(nil, "%s%s:%05d", PrefixMultipartPart, uploadID, partNum)
 }
