@@ -10,40 +10,53 @@
 
 ---
 
-## Week 1: Core Storage (`data-svc`) & Consensus (`metadata-svc`)
+## Week 1: Core Storage, Consensus & Gateway MVP (CLI Vertical Slice)
 - [ ] **Tooling & Logging:** Compile `proto/castor/v1/*.proto`; set up structured JSON logging (`log/slog`) and env-var configs.
 - [ ] **`data-svc` Engine:**
   - Two-phase disk writes: `/data/staging/<uuid>.tmp` $\rightarrow$ `file.Sync()` $\rightarrow$ atomic `os.Rename` to `/data/chunks/xx/<sha256>`.
-  - gRPC `DataService`: `PutChunk` (stream + verify SHA-256), `GetChunk`, `DeleteChunk`, `ReplicateChunk` (P2P copy), `HealthCheck`.
+  - gRPC `DataService`: `PutChunk` (stream + verify SHA-256), `GetChunk`, `DeleteChunk`, `HealthCheck`.
   - 3-second heartbeat loop reporting capacity telemetry to `metadata-svc`.
 - [ ] **`metadata-svc` Consensus:**
   - Storage engines: `raft-boltdb` for consensus WAL & stable store (`/data/raft/raft.db`) and BadgerDB for replicated FSM (`/data/badger/state/`).
   - 3-node `hashicorp/raft` bootstrap with custom FSM (`Apply`, `Snapshot`, `Restore`).
   - In-memory heartbeat registry (Raft bypass).
-  - gRPC `MetadataService`: `CheckBucketExists`, bucket CRUD (with `owner_id`), `CheckChunks` (dedup), atomic `CommitManifest`, `GetManifest`, `DeleteManifest`.
-- [ ] **Tests:** Unit tests for staging crash recovery & checksum mismatch; integration tests for 3-node Raft election and log replication.
+  - gRPC `MetadataService`: `CreateBucket`, `DeleteBucket`, `ListBuckets`, `CheckBucketExists`, atomic `CommitManifest`, `GetManifest`, `DeleteManifest`.
+- [ ] **`gateway-svc` S3 REST MVP (`:9000` via `versitygw`):**
+  - Memory-bounded 4MB streaming chunker (`sync.Pool`) with concurrency semaphore.
+  - Placement & Quorum: Fixed/active node dispatch with majority write quorum ($W=2$ of 3).
+  - Implement basic `versitygw.Backend`:
+    - `CreateBucket` (`aws s3 mb`)
+    - `DeleteBucket` (`aws s3 rb`)
+    - `ListBuckets` (`aws s3 ls`)
+    - `PutObject` / Overwrite (`aws s3 cp <local> s3://<bucket>/<key>`)
+    - `GetObject` (`aws s3 cp s3://<bucket>/<key> <local>`)
+    - `DeleteObject` (`aws s3 rm s3://<bucket>/<key>`)
+  - Static root credentials / unsigned request support (`--no-sign-request` or fixed bootstrap keypair e.g., `admin`/`admin123`).
+- [ ] **CLI Validation & Tests:**
+  - End-to-end AWS CLI integration tests: bucket creation, file upload, file download, key overwrite, file deletion, and bucket removal.
+  - Integration tests for 3-node Raft election and log replication during active writes.
 
-**Milestone 1:** Storage nodes write chunks with atomic fsync; 3-node Raft cluster commits and replicates metadata.
+**Milestone 1:** Full end-to-end distributed S3 pipeline operational via CLI! All three core services (`gateway-svc`, `metadata-svc`, `data-svc`) are up. Basic bucket & object CRUD operations function via `aws s3` CLI commands.
 
 ---
 
-## Week 2: Stateless Gateway, Auth Service & S3 REST Engine
-- [ ] **Ingress Engine:** Memory-bounded 4MB buffer pool (`sync.Pool`) with concurrency semaphore.
-- [ ] **Placement & Quorum:**
-  - Active node cache (5s TTL) from `metadata-svc.GetActiveNodes`.
-  - Capacity-weighted node selection; parallel fan-out write with majority quorum ($W=2$ of 3).
-  - Inline SHA-256 deduplication (bypass existing chunks).
-- [ ] **Identity & Auth Service (`auth-svc`):**
+## Week 2: Auth Service, Dynamic SigV4, Deduplication & Advanced Ingress
+- [ ] **Identity & Auth Service (`auth-svc :9095`):**
   - PostgreSQL / SQLite schema: `users` (with `bcrypt` passwords) and `s3_credentials` (`access_key_id` / `secret_access_key`).
-  - REST endpoints: `POST /auth/register`, `POST /auth/login` (JWT), `POST /auth/keys`, `GET /internal/validate-key`.
-- [ ] **S3 REST via `versitygw` (`:9000`):**
-  - Implement `versitygw.Backend`: `CreateBucket`, `DeleteBucket`, `ListBuckets`, `HeadBucket`, `PutObject`, `GetObject` (with `Range`), `HeadObject`, `DeleteObject`, `ListObjectsV2`.
-  - Dynamic SigV4 credential validation bridging into `auth-svc` with in-memory LRU cache (30s TTL).
-  - Path-style routing, unsigned payload support (`--no-sign-request`).
+  - REST endpoints: `POST /auth/register`, `POST /auth/login` (JWT), `POST /auth/keys`, `DELETE /auth/keys/{id}`, `GET /internal/validate-key`.
+- [ ] **Dynamic SigV4 Credential Validation:**
+  - Bridge `gateway-svc` into `auth-svc` with in-memory LRU credential cache (30s TTL).
+  - Multi-user isolation: Link buckets and manifests to `owner_id` (User UUID).
+- [ ] **Ingress & Storage Optimizations:**
+  - Inline SHA-256 deduplication: Query `metadata-svc.CheckChunks` to bypass writing duplicate chunks across uploads.
+  - Dynamic capacity-weighted node selection from active heartbeat registry cache.
+  - `ListObjectsV2` prefix and delimiter (`/`) folder hierarchy support.
+  - `Range` GET request support (partial content / streaming).
+  - P2P chunk replication (`ReplicateChunk`) on `data-svc`.
 - [ ] **Observability & Lifecycle:** Prometheus `/metrics`, `/healthz` endpoints, graceful shutdown on `SIGTERM`.
-- [ ] **Tests:** Automated AWS CLI integration suite (`aws s3 mb`, `rb`, `cp`, `ls`, `rm`, `sync`).
+- [ ] **Tests:** Multi-user isolation test suite and automated AWS CLI test with rotated credentials.
 
-**Milestone 2:** Fully functional local S3 store. Multi-user S3 credentials validated from PostgreSQL/SQLite with live metrics and AWS CLI compatibility.
+**Milestone 2:** Production-ready multi-user object store with dynamic SigV4 validation, PostgreSQL/SQLite auth backend, inline chunk deduplication, HTTP Range requests, and Prometheus metrics.
 
 ---
 
@@ -92,7 +105,7 @@
 
 | Week | Focus | Core Deliverable |
 |---|---|---|
-| **Week 1** | **Storage & Consensus** | `data-svc` atomic engine + `metadata-svc` 3-node Raft cluster on BadgerDB. |
-| **Week 2** | **Gateway, Auth & S3 API** | 4MB streaming chunker + `auth-svc` (PostgreSQL/SQLite) + `versitygw` S3 REST frontend with dynamic SigV4 validation. |
+| **Week 1** | **Storage, Consensus & Gateway MVP (CLI Slice)** | 3 core services up (`gateway-svc`, `metadata-svc`, `data-svc`). Working `aws s3` CLI for bucket & object CRUD with static/bootstrap auth. |
+| **Week 2** | **Dynamic Auth, Dedup & S3 Enhancements** | `auth-svc` (PostgreSQL/SQLite) + dynamic SigV4 validation + inline SHA-256 dedup + `ListObjectsV2` + `Range` GET + metrics. |
 | **Week 3** | **Multipart, Self-Healing & Console** | S3 multipart upload + leader GC worker + embedded Web Console UI on `:9001`. |
 | **Week 4** | **Cloud K8s & Chaos** | Distroless containers + GKE StatefulSets/NLB deployment + live chaos testing. |
