@@ -120,25 +120,30 @@ func NewRaftNode(cfg config.Config, fsm *FSM) (*RaftNode, error) {
 	}, nil
 }
 
-func (r *RaftNode) Apply(cmd *Command, timeout time.Duration) error {
+func (r *RaftNode) Apply(cmd *Command, timeout time.Duration) (any, error) {
 	if r.raft == nil {
-		return fmt.Errorf("raft not initialized")
+		return nil, fmt.Errorf("raft not initialized")
 	}
 
 	data, err := cmd.Encode()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	deadline := time.Now().Add(timeout)
 	for {
+
+		if time.Until(deadline) <= 0 {
+			return nil, fmt.Errorf("raft deadline exceeded")
+		}
+
 		future := r.raft.Apply(data, timeout)
 		err := future.Error()
 		if err == nil {
 			if res, ok := future.Response().(error); ok && res != nil {
-				return res
+				return res, nil
 			}
-			return nil
+			return future.Response(), nil
 		}
 
 		if errors.Is(err, raft.ErrNotLeader) && time.Now().Before(deadline) {
@@ -146,7 +151,6 @@ func (r *RaftNode) Apply(cmd *Command, timeout time.Duration) error {
 			continue
 		}
 
-		return err
 	}
 }
 

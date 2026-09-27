@@ -83,7 +83,7 @@ func TestRaftNode_Apply(t *testing.T) {
 	}
 
 	// Attempt Apply with timeout
-	err = node.Apply(cmd, 3*time.Second)
+	_, err = node.Apply(cmd, 3*time.Second)
 	if err != nil {
 		t.Fatalf("apply failed: %v", err)
 	}
