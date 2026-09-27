@@ -67,6 +67,15 @@ func (s *Store) CreateBucket(ctx context.Context, bucket, ownerID string, tags m
 	return created, nil
 }
 
+// EnsureBucket creates a bucket if it does not already exist.
+func (s *Store) EnsureBucket(ctx context.Context, bucket, ownerID string) error {
+	_, err := s.CreateBucket(ctx, bucket, ownerID, nil)
+	if errors.Is(err, ErrBucketExists) {
+		return nil
+	}
+	return err
+}
+
 // DeleteBucket marks a bucket as deleted if it contains no active manifests.
 func (s *Store) DeleteBucket(ctx context.Context, bucket string) error {
 	if ctx != nil && ctx.Err() != nil {
@@ -830,6 +839,16 @@ func (s *Store) RemoveChunkLocations(ctx context.Context, chunkHash string, node
 			return err
 		}
 		return txn.Set(key, val)
+	})
+}
+
+// DeleteChunkLocation completely deletes a chunk location record.
+func (s *Store) DeleteChunkLocation(ctx context.Context, chunkHash string) error {
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Delete(ChunkKey(chunkHash))
 	})
 }
 

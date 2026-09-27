@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -54,6 +55,18 @@ func (s *Store) Close() error {
 
 func (s *Store) DB() *badger.DB {
 	return s.db
+}
+
+func (s *Store) Backup(w io.Writer) error {
+	_, err := s.db.Backup(w, 0)
+	return err
+}
+
+func (s *Store) Restore(r io.Reader) error {
+	if err := s.db.DropAll(); err != nil {
+		return err
+	}
+	return s.db.Load(r, 16)
 }
 
 func (s *Store) GetBucket(ctx context.Context, name string) (*castorv1.BucketRecord, error) {

@@ -64,7 +64,7 @@ func TestCommandRoundTrip_CommitManifest(t *testing.T) {
 				Size:          512,
 			},
 		},
-		UserMetadata: map[string]string{"uploader": "alice"},
+		OwnerId: "random uuid",
 	}
 
 	cmd, err := NewCommitManifestCommand(req)
