@@ -7,16 +7,22 @@ import (
 )
 
 type NodeConfig struct {
-	NodeId string
+	NodeId   string
+	GRPCAddr string
+	DataDir  string
 }
 
 func Load() NodeConfig {
-	godotenv.Load()
+	_ = godotenv.Load()
 
-	id := getEnv("NODE_ID", "temp-node-id")
+	id := getEnv("NODE_ID", "data-1")
+	grpcAddr := getEnv("GRPC_ADDR", ":9101")
+	dataDir := getEnv("DATA_DIR", "data")
 
 	return NodeConfig{
-		NodeId: id,
+		NodeId:   id,
+		GRPCAddr: grpcAddr,
+		DataDir:  dataDir,
 	}
 }
 
