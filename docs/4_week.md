@@ -53,10 +53,11 @@
   - `ListObjectsV2` prefix and delimiter (`/`) folder hierarchy support.
   - `Range` GET request support (partial content / streaming).
   - P2P chunk replication (`ReplicateChunk`) on `data-svc`.
+- [ ] **Presigned URLs:** `POST /api/files/presign` BFF endpoint generating stateless AWS-compatible query-string SigV4 signed URLs (GET for sharing, PUT for upload delegation). `versitygw` verifies incoming presigned requests automatically.
 - [ ] **Observability & Lifecycle:** Prometheus `/metrics`, `/healthz` endpoints, graceful shutdown on `SIGTERM`.
 - [ ] **Tests:** Multi-user isolation test suite and automated AWS CLI test with rotated credentials.
 
-**Milestone 2:** Production-ready multi-user object store with dynamic SigV4 validation, PostgreSQL/SQLite auth backend, inline chunk deduplication, HTTP Range requests, and Prometheus metrics.
+**Milestone 2:** Production-ready multi-user object store with dynamic SigV4 validation, PostgreSQL/SQLite auth backend, inline chunk deduplication, HTTP Range requests, stateless presigned URLs (GET & PUT), and Prometheus metrics.
 
 ---
 
@@ -69,6 +70,7 @@
 - [ ] **Leader-Only Background Workers (`metadata-svc`):**
   - **Quarantine GC:** Scan `RefCount == 0` AND `time > 24h` $\rightarrow$ rate-limited `DeleteChunk` (50/s) $\rightarrow$ propose `RemoveChunkLocations`.
   - **Active Replica Healer:** Scan `len(Nodes) < 3` $\rightarrow$ issue `ReplicateChunk` for P2P copy $\rightarrow$ update metadata via Raft.
+  - **Bit-Rot Scrubber:** Full-cluster periodic integrity scan (7-day cycle, 10 chunks/sec rate limit). Issues `ScrubChunk` RPC to each holding `data-svc` node (local verify, no byte streaming). On SHA-256 mismatch: propose `CmdMarkChunkCorrupted` through Raft → trigger `TriggerReadRepair`. Progress tracked via `scrub_cursor` key in BadgerDB to survive leader failover.
   - **Multipart Cleanup:** Auto-abort pending multipart uploads older than 24 hours.
 - [ ] **Embedded Web Console & BFF (`gateway-svc :9001`):**
   - AI-generated modern SPA embedded via Go `//go:embed dist/*`.
@@ -79,7 +81,7 @@
 - [ ] **Passive Read-Repair:** Gateway detects bad checksum or unreachable node during download $\rightarrow$ fails over to replica $\rightarrow$ triggers async repair.
 - [ ] **Admin API:** Expose `/admin/nodes`, `/admin/raft/status`, and `POST /admin/gc?dry_run=true`.
 
-**Milestone 3:** Resilient, self-healing cluster with an interactive embedded Web Console, multi-gigabyte multipart uploads, and automated 24h quarantine GC.
+**Milestone 3:** Resilient, self-healing cluster with an interactive embedded Web Console, multi-gigabyte multipart uploads, automated 24h quarantine GC, and background bit-rot scrubbing with automatic read-repair.
 
 ---
 
@@ -106,6 +108,6 @@
 | Week | Focus | Core Deliverable |
 |---|---|---|
 | **Week 1** | **Storage, Consensus & Gateway MVP (CLI Slice)** | 3 core services up (`gateway-svc`, `metadata-svc`, `data-svc`). Working `aws s3` CLI for bucket & object CRUD with static/bootstrap auth. |
-| **Week 2** | **Dynamic Auth, Dedup & S3 Enhancements** | `auth-svc` (PostgreSQL/SQLite) + dynamic SigV4 validation + inline SHA-256 dedup + `ListObjectsV2` + `Range` GET + metrics. |
-| **Week 3** | **Multipart, Self-Healing & Console** | S3 multipart upload + leader GC worker + embedded Web Console UI on `:9001`. |
+| **Week 2** | **Dynamic Auth, Dedup, S3 Enhancements & Presigned URLs** | `auth-svc` (PostgreSQL/SQLite) + dynamic SigV4 validation + inline SHA-256 dedup + `ListObjectsV2` + `Range` GET + presigned URLs + metrics. |
+| **Week 3** | **Multipart, Self-Healing, Console & Bit-Rot Scrubber** | S3 multipart upload + leader GC worker + bit-rot scrubber (7-day cycle, read-repair) + embedded Web Console UI on `:9001`. |
 | **Week 4** | **Cloud K8s & Chaos** | Distroless containers + GKE StatefulSets/NLB deployment + live chaos testing. |

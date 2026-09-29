@@ -34,7 +34,7 @@ Castor decouples **stateless protocol & console ingress**, **identity management
 
 1. **`gateway-svc` (Stateless Front Door, Ports `:9000` & `:9001`)**:
    - **Port `:9000` (S3 REST Engine)**: Embeds `versitygw` to provide Amazon S3 REST compatibility (Path-style, dynamic SigV4 authentication via `auth-svc`, XML marshaling). Ingress chunking engine streams payloads disklessly through 4MB memory buffers (`sync.Pool`), computes SHA-256 hashes, queries deduplication, and coordinates $W=2$ quorum writes.
-   - **Port `:9001` (Embedded Web Console & BFF)**: Serves a precompiled, single-page web console embedded via Go `embed.FS`. Exposes browser-tailored JSON endpoints for user authentication, S3 key generation, file browsing/uploads, and live cluster health telemetry.
+   - **Port `:9001` (Embedded Web Console & BFF)**: Serves a precompiled, single-page web console embedded via Go `embed.FS`. Exposes browser-tailored JSON endpoints for user authentication, S3 key generation, file browsing/uploads, live cluster health telemetry, and presigned URL generation (`POST /api/files/presign`).
    - **In-Memory Credential Cache**: Maintains a short-lived (30s TTL) LRU cache of active S3 credentials to prevent database connection saturation during high-throughput S3 streams.
    - Horizontally scalable behind a layer 4 or layer 7 load balancer.
 
@@ -64,6 +64,8 @@ Castor decouples **stateless protocol & console ingress**, **identity management
 - **24-Hour Quarantine Window**: When objects are overwritten or deleted, chunk reference counts decrement. Chunks with `ref_count == 0` enter a 24-hour grace period before physical disk purging, eliminating race conditions with concurrent uploads.
 - **Leader-Only Embedded Workers**: All garbage collection and healing workers execute exclusively on the active Raft leader, preventing split-brain operations without requiring external schedulers.
 - **Strict Separation of Identity and Storage State**: Relational Auth DB owns user identity and credentials; Raft consensus owns bucket and object manifest state. Zero cross-system distributed 2-phase transactions.
+- **Stateless Presigned URLs**: Time-limited object access URLs are computed using HMAC-SHA256 over `(method, bucket, key, expiry, access_key_id)` directly in the gateway. Zero database storage required; verified by `versitygw`'s built-in query-string SigV4 handler.
+- **Background Bit-Rot Scrubbing**: A leader-only scrubber worker performs periodic full-cluster integrity scans, issuing `ScrubChunk` RPCs (local SHA-256, no byte streaming) to each `data-svc` node. Corruption triggers automatic read-repair and replica replacement. A `scrub_cursor` in BadgerDB ensures progress survives leader failover.
 
 ---
 
@@ -72,7 +74,7 @@ Castor decouples **stateless protocol & console ingress**, **identity management
 To maintain a lean, robust implementation, the following features are intentionally out of scope:
 - **No Complex AWS IAM JSON Policy Engine or STS**: Authentication uses user accounts and S3 API keypairs with bucket ownership checks (`owner_id`); dynamic multi-statement AWS IAM policy evaluation is excluded.
 - **No Object Versioning**: All overwrites strictly follow Last-Write-Wins (LWW).
-- **No Erasure Coding**: Fixed $R=3$ replication with SHA-256 verify-on-read.
+- **No Erasure Coding**: Fixed $R=3$ replication with SHA-256 verify-on-read. Erasure coding is economically justified only at 50+ nodes; at a 3-node cluster the network reconstruction cost exceeds storage savings.
 - **No Server-Side Encryption (KMS)**.
 - **No Object Tagging, Cross-Region Replication, or Static Website Hosting**.
 - **No Dynamic Raft Membership**: Fixed 3-node metadata cluster topology.

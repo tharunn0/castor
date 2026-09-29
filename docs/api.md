@@ -220,6 +220,18 @@ Deletes an object manifest (marks tombstone and decrements chunk reference count
 - **Request**: `DELETE /media/videos/sample.mp4 HTTP/1.1`
 - **Response**: `HTTP/1.1 204 No Content`
 
+##### `GET /<bucket>/<key>?X-Amz-*` — Presigned Object Access
+Time-limited unauthenticated access to a private object. All auth parameters are encoded in the query string.
+- **Query Parameters** (AWS SigV4 presigned format):
+  - `X-Amz-Algorithm`: `AWS4-HMAC-SHA256`
+  - `X-Amz-Credential`: `<access_key_id>/<date>/<region>/s3/aws4_request`
+  - `X-Amz-Date`: Request timestamp (ISO8601 basic format)
+  - `X-Amz-Expires`: Validity duration in seconds (max 604800)
+  - `X-Amz-SignedHeaders`: `host`
+  - `X-Amz-Signature`: HMAC-SHA256 signature
+- **Response**: `HTTP/1.1 200 OK` with object bytes (or `403 Forbidden` if expired or signature invalid)
+- **Note**: Verified automatically by `versitygw`'s built-in query-string SigV4 handler. No Castor-specific code required on the read path.
+
 ##### `GET /<bucket>?list-type=2` — ListObjectsV2
 Lists object keys inside a bucket with optional prefix and delimiter hierarchy.
 - **Query Parameters**:
@@ -325,6 +337,8 @@ Exposed directly by `metadata-svc` nodes (with the active leader handling state 
 - `GET /admin/raft/status`: Returns JSON detailing current term, active leader address, and peer commit indices.
 - `GET /admin/nodes`: Returns JSON array of storage nodes registered in the dynamic heartbeat registry, their health states (`HEALTHY`, `DEGRADED`, `OFFLINE`), and disk capacities.
 - `POST /admin/gc`: Triggers an immediate garbage collection sweep on the Raft leader. Accepts query parameter `?dry_run=true` to report reclaimable chunks without deleting them.
+- `GET /admin/scrub/status`: Returns JSON with current scrubber state: `{running, progress_ratio, chunks_verified, corruptions_found, last_completed_at, cursor_position}`.
+- `POST /admin/scrub/trigger`: Triggers an immediate scrub sweep on the Raft leader, resetting the cursor. Accepts `?dry_run=true` to report corruption without triggering repair.
 
 ### 4.3. Web Console & BFF Endpoints (`gateway-svc :9001`)
 Exposed by `gateway-svc` to serve the embedded single-page UI and browser operations:
@@ -336,6 +350,7 @@ Exposed by `gateway-svc` to serve the embedded single-page UI and browser operat
 - `POST /api/buckets`: Creates a bucket with `owner_id = session.user_id`.
 - `POST /api/files/upload`: In-process multipart file upload bridge directly to `gateway-svc`'s 4MB streaming chunker.
 - `GET /api/files/download`: Streams an object payload directly to the browser.
+- `POST /api/files/presign`: Generates a stateless presigned URL for a bucket object. Request body: `{"bucket": "photos", "key": "img.png", "method": "GET", "expires_in": 3600}`. Response: `{"presigned_url": "http://...", "expires_at": "2026-09-29T10:00:00Z"}`. Requires authenticated JWT session. Maximum expiry: 604800 seconds (7 days).
 
 ### 4.4. Auth Service Endpoints (`auth-svc :9095`)
 Exposed by `auth-svc` backed by PostgreSQL or SQLite:
@@ -517,6 +532,9 @@ service DataService {
 
   // Local node health & disk status
   rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
+  // Local integrity verification (no byte streaming to caller)
+  rpc ScrubChunk(ScrubChunkRequest) returns (ScrubChunkResponse);
 }
 ```
 
@@ -577,6 +595,16 @@ message HealthCheckResponse {
   int64 total_bytes = 3;
   int64 free_bytes = 4;
 }
+
+message ScrubChunkRequest {
+  string chunk_hash = 1;  // SHA-256 hex digest to verify
+}
+
+message ScrubChunkResponse {
+  bool ok = 1;              // true if computed hash matches chunk_hash
+  string computed_hash = 2; // actual SHA-256 computed from disk
+  bool chunk_exists = 3;    // false if chunk file not found on this node
+}
 ```
 
 ---
@@ -622,4 +650,10 @@ curl http://localhost:9071/admin/nodes
 
 # Trigger an on-demand quarantine GC sweep (dry run)
 curl -X POST "http://localhost:9071/admin/gc?dry_run=true"
+
+# Check scrubber status and progress
+curl http://localhost:9071/admin/scrub/status
+
+# Trigger an immediate scrub sweep (dry run)
+curl -X POST "http://localhost:9071/admin/scrub/trigger?dry_run=true"
 ```

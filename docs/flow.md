@@ -334,3 +334,75 @@ This document details the step-by-step execution flows across Castor for Writes,
    - Quorum placement ($W=2$) to `data-svc` nodes executes immediately.
    - `CommitManifest` writes the manifest with `owner_id = session.user_id` into Raft consensus.
    - The browser receives `200 OK` and refreshes the bucket view.
+
+---
+
+## 6. Presigned URL Lifecycle
+
+### 6.1. URL Generation (Web Console)
+
+1. **Initiation**: Authenticated user clicks "Share" on a file in the Web Console (`gateway-svc :9001`).
+2. **BFF Request**: Browser calls `POST /api/files/presign` with `{bucket, key, method: "GET", expires_in: 3600}` and JWT session cookie.
+3. **Secret Key Retrieval**: `gateway-svc` extracts `user_id` from JWT. It checks the in-memory LRU credential cache for the user's `(access_key_id, secret_access_key)`. On cache miss, it queries `auth-svc`.
+4. **Stateless Signature Computation**: Gateway computes the AWS query-string SigV4 canonical request:
+   - String: `method + "\n" + bucket + "/" + key + "\n" + canonical_query_string`
+   - Signs with `HMAC-SHA256(derived_signing_key, string_to_sign)`.
+   - Appends `X-Amz-Signature` to the query string.
+5. **Response**: Returns `{presigned_url, expires_at}` to the browser. No record written to any database.
+
+### 6.2. Presigned URL Consumption (Any Requester)
+
+1. **Request**: Any requester (browser, `curl`, SDK) sends `GET /<bucket>/<key>?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...&X-Amz-Date=...&X-Amz-Expires=...&X-Amz-Signature=...` to `gateway-svc :9000`.
+2. **Signature Verification**: `versitygw` intercepts the request, detects query-string auth parameters, and validates the SigV4 signature. It retrieves the `secret_access_key` from `gateway-svc`'s IAM bridge (LRU cache → `auth-svc`).
+3. **Expiry Check**: `versitygw` rejects with `HTTP 403 Forbidden` if `X-Amz-Date + X-Amz-Expires < now`.
+4. **Object Streaming**: On valid signature, the standard `GetObject` flow executes: manifest lookup → chunk streaming → client response.
+
+### 6.3. Failure Scenarios
+
+#### Scenario A: Expired URL
+- **Event**: Requester uses a presigned URL after its `X-Amz-Expires` window.
+- **Response**: `versitygw` returns `HTTP/1.1 403 Forbidden`, `Code: RequestExpired`.
+
+#### Scenario B: Credential Revoked After Presign
+- **Event**: User revokes their S3 keypair via `DELETE /auth/keys/{id}` after generating a presigned URL.
+- **Handling**: On the next request, `gateway-svc` LRU cache misses (or TTL expires within 30s). `auth-svc` returns status `REVOKED`. `versitygw` returns `HTTP/1.1 403 Forbidden`.
+- **Note**: Up to 30 seconds of residual validity may remain due to LRU TTL. This matches Amazon S3's documented eventual consistency behaviour for credential revocation.
+
+#### Scenario C: Object Deleted After Presign
+- **Event**: Object is deleted between URL generation and access.
+- **Handling**: Signature verification passes (URL is still valid). `metadata-svc.GetManifest` returns `NOT_FOUND`. `gateway-svc` returns `HTTP/1.1 404 Not Found`, `NoSuchKey`.
+
+---
+
+## 7. Bit-Rot Scrubber Lifecycle
+
+### 7.1. Scrubber Worker Execution (Leader-Only)
+
+1. **Leader Activation**: On Raft leader election, `metadata-svc` starts the scrubber worker goroutine.
+2. **Cursor Initialization**: Worker reads `scrub_cursor` from BadgerDB. If present, resumes from `last_chunk_hash`; otherwise starts from the beginning of the `chunk:*` keyspace.
+3. **Chunk Iteration**: Worker iterates through `chunk:*` records in BadgerDB lexicographically, rate-limited to 10 chunks/sec via a token bucket.
+4. **Per-Chunk Verification**:
+   - Reads `ChunkLocationRecord` to obtain holding node addresses.
+   - For each holding node, issues `DataService.ScrubChunk(chunk_hash)` RPC.
+   - The `data-svc` node opens `/data/chunks/xx/<sha256>` locally, computes SHA-256 incrementally, and returns `{ok, computed_hash, chunk_exists}`.
+5. **Result Processing**:
+   - `ok == true`: Integrity confirmed. Update `scrub_cursor`. Increment `storage_scrub_chunks_verified_total` metric.
+   - `ok == false` (hash mismatch): Log `ERROR` with `chunk_hash`, `node_address`, `computed_hash`. Propose `CmdMarkChunkCorrupted(chunk_hash, node_address)` through Raft. Issue `TriggerReadRepair`. Increment `storage_scrub_corruptions_detected_total`.
+   - `chunk_exists == false`: Chunk missing from node (not a hash error). Treat as under-replication — healer worker handles it independently.
+6. **Cycle Completion**: After scanning all chunks, records `cycle_started_at`, resets cursor, and sleeps for 7 days before next cycle.
+
+### 7.2. Failure Scenarios & Recovery
+
+#### Scenario A: Leader Failover Mid-Scrub
+- **Event**: Raft leader crashes while scanning chunk index 500,000 of 2,000,000.
+- **Handling**: Worker immediately exits on leadership loss. `scrub_cursor` was persisted to BadgerDB at the last `CmdMarkChunkCorrupted` or cursor update.
+- **Recovery**: New leader reads `scrub_cursor`, resumes from `last_chunk_hash`. Chunks between last cursor save and the crash are re-scanned (idempotent; re-verifying a healthy chunk is harmless).
+
+#### Scenario B: Storage Node Offline During Scrub
+- **Event**: `ScrubChunk` RPC to Node 2 times out (node offline).
+- **Handling**: Scrubber marks that replica attempt as `chunk_exists == false` (treated as missing, not corrupt). The healer worker, running concurrently, will detect `len(nodes) < 3` and schedule re-replication from a healthy replica. Scrubber moves to the next chunk without blocking.
+
+#### Scenario C: Scrub Detects Widespread Corruption
+- **Event**: An NVMe drive fails silently, corrupting thousands of chunks on Node 1.
+- **Handling**: Scrubber detects mismatch after mismatch from Node 1. Each detection proposes `CmdMarkChunkCorrupted` through Raft, evicting Node 1 from those chunks. The healer worker races to re-replicate from healthy replicas. `storage_scrub_corruptions_detected_total` counter spikes — Prometheus alert fires.
+- **Operator Action**: Admin calls `curl http://localhost:9071/admin/scrub/status` to see progress, then investigates Node 1 hardware.
