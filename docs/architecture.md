@@ -6,25 +6,28 @@ This document outlines the architecture, end-to-end data flows, and operational 
 
 ## 1. High-Level System Architecture
 
-Castor consists of four primary service layers across the data and control planes:
+Castor consists of five primary service layers across the data, control, and presentation planes:
 - **`gateway-svc`**: Stateless front door exposing:
   - **S3 REST API (`:9000`)**: Embedded `versitygw` with dynamic SigV4 validation, in-memory 4MB chunking (`sync.Pool`), streaming deduplication checks, and quorum placement coordination.
-  - **Embedded Web Console & BFF (`:9001`)**: Go `embed.FS` serving an AI-generated UI, JWT session endpoints, and an in-process bridge for browser file operations.
+  - **Headless Browser BFF API (`:9001`)**: Pure Go JSON REST API (`/api/*`) for JWT sessions, cluster health aggregation, bucket management, and an in-process streaming upload bridge (with CORS support).
+- **`castor-ui`**: Standalone, lightweight operator SPA (React/Vite/Tailwind) deployed independently (Nginx container or static hosting) with zero impact on the S3 binary lifecycle.
 - **`auth-svc`**: Identity and credential provider (`:9095`) backed by a relational database (PostgreSQL or SQLite). Manages users, password hashing (`bcrypt`), and S3 `(access_key, secret_key)` keypairs with internal validation RPCs.
 - **`metadata-svc`**: 3-node Raft consensus cluster (`:9091`-`:9093`) backed by BadgerDB. Manages buckets, manifests (with `owner_id` user attribution), chunk locations, an in-memory dynamic node registry, leader-only background workers, and administrative HTTP endpoints (`/healthz`, `/metrics`, `/admin/*`).
 - **`data-svc`**: Stateless, content-addressed storage nodes (`:9101`-`:9103`) storing raw chunks directly on local filesystems with two-character prefix sharding (`/data/chunks/xx/<sha256>`). Agnostic to users and auth.
 
 ```mermaid
 flowchart TD
-    subgraph Clients["Clients & Tooling"]
+    subgraph Clients["Clients & Presentation"]
         S3Client["AWS CLI / S3 SDKs / Rclone (HTTP S3 :9000)"]
-        WebUser["Web Browser Console (HTTP :9001)"]
+        WebUser["Web Browser"]
+        UIHost["castor-ui (Standalone SPA Host / Nginx)"]
+        WebUser -->|Load Assets| UIHost
     end
 
     subgraph GatewayLayer["Gateway Layer (gateway-svc, Stateless, Horizontally Scalable)"]
         direction TB
         GW_S3["Port :9000: S3 REST Frontend<br/>• versitygw (SigV4, Path-Style)<br/>• 4MB Fixed Chunking &amp; SHA-256 Hashing<br/>• sync.Pool Buffer Pool &amp; Backpressure<br/>• Quorum Coordinator (W=2, Replication=3)<br/>• In-Memory Credential Cache (30s TTL)"]
-        GW_UI["Port :9001: Web Console &amp; BFF (embed.FS)<br/>• Serves Static Dashboard Assets<br/>• Browser JSON API (/api/*)<br/>• In-Process Upload Bridge"]
+        GW_UI["Port :9001: Headless BFF API<br/>• Browser JSON API (/api/*)<br/>• Session Auth &amp; Key Mgmt<br/>• In-Process Upload Bridge"]
     end
 
     subgraph ControlPlane["Control Plane (auth-svc :9095)"]
@@ -51,7 +54,7 @@ flowchart TD
     end
 
     S3Client -->|HTTP/REST :9000| GW_S3
-    WebUser -->|HTTP/REST :9001| GW_UI
+    WebUser -->|JSON API / Ingress :9001| GW_UI
 
     GW_S3 -.->|Validate Key Cache Miss| AuthSvc
     GW_UI -->|Auth & Key Management| AuthSvc
@@ -312,6 +315,6 @@ flowchart TD
 | **Data Integrity** | SHA-256 Content-Addressing | Chunks verified on ingress, atomic disk promotion, and verified on read. |
 | **Crash Consistency** | Staging + POSIX `os.Rename` | Zero torn chunk writes on disk; staged files cleaned up on restart. |
 | **Garbage Collection Safety** | 24-Hour Quarantine Window | Protects concurrent deduplicating writes from race conditions with chunk deletion. |
-| **Operational Simplicity** | Embedded Leader Workers & Single Binary Console | No external orchestrators; console runs in-process inside `gateway-svc` on port `:9001`. |
+| **Operational Simplicity** | Embedded Leader Workers & Headless BFF | No external orchestrators; headless BFF on `:9001` isolates S3 data path from independent UI deployments. |
 | **Presigned URL Security** | Stateless HMAC-SHA256 Query-String SigV4 | Time-limited, credential-free object access; verified by `versitygw`; zero DB storage. |
 | **Proactive Integrity Verification** | Leader-Only Scrubber Worker + `ScrubChunk` RPC | Detects silent bit-rot before client reads; local node verify (no byte streaming); repair triggered automatically. |

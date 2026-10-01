@@ -2,8 +2,9 @@
 
 ---
 
-## Topology
-- **`gateway-svc`**: Stateless dual-port front door: S3 REST frontend (`:9000` via embedded `versitygw`) + Embedded Web Console & BFF (`:9001` via Go `embed.FS`).
+### Topology
+- **`gateway-svc`**: Stateless dual-port front door: S3 REST frontend (`:9000` via embedded `versitygw`) + Browser JSON BFF API (`:9001` with CORS support for standalone UI).
+- **`castor-ui`**: Standalone, lightweight operator SPA (React/Vite/Tailwind) deployed independently, communicating via BFF API on `:9001` or unified via Ingress.
 - **`auth-svc`**: Identity and credential provider (`:9095`) backed by PostgreSQL or SQLite (`users` and `s3_credentials`).
 - **`metadata-svc`**: 3-node Raft consensus cluster backed by `raft-boltdb` (`/data/raft/raft.db` WAL/stable store) and BadgerDB (`/data/badger/state/` FSM with user attribution `owner_id`).
 - **`data-svc`**: Raw 4MB chunk store on local disk (`/data/chunks/xx/<sha256>`).
@@ -40,55 +41,67 @@
 
 ---
 
-## Week 2: Auth Service, Dynamic SigV4, Deduplication & Advanced Ingress
+## Week 2: Auth Service, Docker Containerization, Advanced Ingress & Console MVP
 - [ ] **Identity & Auth Service (`auth-svc :9095`):**
   - PostgreSQL / SQLite schema: `users` (with `bcrypt` passwords) and `s3_credentials` (`access_key_id` / `secret_access_key`).
   - REST endpoints: `POST /auth/register`, `POST /auth/login` (JWT), `POST /auth/keys`, `DELETE /auth/keys/{id}`, `GET /internal/validate-key`.
 - [ ] **Dynamic SigV4 Credential Validation:**
   - Bridge `gateway-svc` into `auth-svc` with in-memory LRU credential cache (30s TTL).
   - Multi-user isolation: Link buckets and manifests to `owner_id` (User UUID).
-- [ ] **Ingress & Storage Optimizations:**
-  - Inline SHA-256 deduplication: Query `metadata-svc.CheckChunks` to bypass writing duplicate chunks across uploads.
-  - Dynamic capacity-weighted node selection from active heartbeat registry cache.
+- [ ] **Ingress Enhancements & Presigned URLs:**
   - `ListObjectsV2` prefix and delimiter (`/`) folder hierarchy support.
   - `Range` GET request support (partial content / streaming).
-  - P2P chunk replication (`ReplicateChunk`) on `data-svc`.
-- [ ] **Presigned URLs:** `POST /api/files/presign` BFF endpoint generating stateless AWS-compatible query-string SigV4 signed URLs (GET for sharing, PUT for upload delegation). `versitygw` verifies incoming presigned requests automatically.
+  - Stateless AWS SigV4 presigned URLs (`POST /api/files/presign` on `:9001`).
+- [ ] **Docker Containerization & Local Cluster (`docker-compose.yml`):**
+  - Multi-stage distroless `Dockerfile`s (`CGO_ENABLED=0`, non-root) for `gateway-svc`, `auth-svc`, `metadata-svc`, and `data-svc`.
+  - Turnkey local `docker-compose.yml` orchestrating PostgreSQL, `auth-svc`, `gateway-svc`, 3 `metadata-svc` nodes, and 3 `data-svc` nodes.
+  - Verifies multi-container networking and disk volumes locally before touching the cloud.
+- [ ] **Console MVP (`castor-ui` v1 & Headless BFF):**
+  - Headless BFF setup on `gateway-svc :9001` with CORS and JWT cookie/token support.
+  - Setup minimal `castor-ui` SPA (React + Vite + Tailwind):
+    - **Login Screen**: Clean email/password authentication.
+    - **Access Key Manager**: One-click S3 keypair generation with copy-to-clipboard `aws configure` snippet.
 - [ ] **Observability & Lifecycle:** Prometheus `/metrics`, `/healthz` endpoints, graceful shutdown on `SIGTERM`.
 - [ ] **Tests:** Multi-user isolation test suite and automated AWS CLI test with rotated credentials.
 
-**Milestone 2:** Production-ready multi-user object store with dynamic SigV4 validation, PostgreSQL/SQLite auth backend, inline chunk deduplication, HTTP Range requests, stateless presigned URLs (GET & PUT), and Prometheus metrics.
+**Milestone 2:** Multi-user object store with dynamic SigV4 validation, PostgreSQL auth backend, complete local Docker Compose cluster, HTTP Range/ListObjectsV2 support, and a working Web Console MVP for login and S3 key management.
 
 ---
 
-## Week 3: Multipart Uploads, Self-Healing & Embedded Web Console
+## Week 3: Multipart Uploads, Deduplication, Self-Healing & Console Explorer
 - [ ] **S3 Multipart Pipeline:**
   - `InitiateMultipartUpload` (issue `UploadId`).
   - `UploadPart` (stream 5MB+ parts, slice into 4MB chunks, persist part records).
   - `CompleteMultipartUpload` (atomic concatenation into final manifest via single Raft commit).
   - `AbortMultipartUpload` (discard uncommitted parts, decrement chunk refcounts).
+- [ ] **Storage Engine Optimizations:**
+  - Inline SHA-256 deduplication: Query `metadata-svc.CheckChunks` to bypass writing duplicate chunks across uploads.
+  - Dynamic capacity-weighted node selection from active heartbeat registry cache.
+  - P2P chunk replication (`ReplicateChunk`) on `data-svc`.
 - [ ] **Leader-Only Background Workers (`metadata-svc`):**
   - **Quarantine GC:** Scan `RefCount == 0` AND `time > 24h` $\rightarrow$ rate-limited `DeleteChunk` (50/s) $\rightarrow$ propose `RemoveChunkLocations`.
   - **Active Replica Healer:** Scan `len(Nodes) < 3` $\rightarrow$ issue `ReplicateChunk` for P2P copy $\rightarrow$ update metadata via Raft.
   - **Bit-Rot Scrubber:** Full-cluster periodic integrity scan (7-day cycle, 10 chunks/sec rate limit). Issues `ScrubChunk` RPC to each holding `data-svc` node (local verify, no byte streaming). On SHA-256 mismatch: propose `CmdMarkChunkCorrupted` through Raft → trigger `TriggerReadRepair`. Progress tracked via `scrub_cursor` key in BadgerDB to survive leader failover.
   - **Multipart Cleanup:** Auto-abort pending multipart uploads older than 24 hours.
-- [ ] **Embedded Web Console & BFF (`gateway-svc :9001`):**
-  - AI-generated modern SPA embedded via Go `//go:embed dist/*`.
-  - User login & JWT session handling (`/api/auth/*`).
-  - S3 Access Key management view (one-click generate & copy snippet for AWS CLI).
-  - Bucket & file explorer with in-process chunked upload bridge (`POST /api/files/upload`).
-  - Live cluster health dashboard querying `/admin/raft/status` and `/admin/nodes`.
-- [ ] **Passive Read-Repair:** Gateway detects bad checksum or unreachable node during download $\rightarrow$ fails over to replica $\rightarrow$ triggers async repair.
-- [ ] **Admin API:** Expose `/admin/nodes`, `/admin/raft/status`, and `POST /admin/gc?dry_run=true`.
+- [ ] **Web Console v2 (`castor-ui` Full Feature):**
+  - **Bucket & File Explorer**: Browse folders, stream downloads, view file metadata, generate presigned sharing links, and drag-and-drop uploads via direct presigned URLs or in-process upload bridge (`POST /api/files/upload`).
+  - **Live Cluster Health Dashboard**: Real-time visualization of Raft leader status, active/degraded storage nodes, disk capacity utilization, and scrubber progress.
+- [ ] **Passive Read-Repair & Admin API:**
+  - Gateway detects bad checksum or unreachable node during download $\rightarrow$ fails over to replica $\rightarrow$ triggers async repair.
+  - Admin endpoints: `/admin/nodes`, `/admin/raft/status`, `POST /admin/gc?dry_run=true`.
 
-**Milestone 3:** Resilient, self-healing cluster with an interactive embedded Web Console, multi-gigabyte multipart uploads, automated 24h quarantine GC, and background bit-rot scrubbing with automatic read-repair.
+**Milestone 3:** Resilient, self-healing cluster with multi-gigabyte multipart uploads, inline deduplication, automated 24h quarantine GC, bit-rot scrubbing with auto-repair, and a full-featured operator Web Console.
 
 ---
 
-## Week 4: Cloud Kubernetes (GKE) Deployment & Chaos Testing
-- [ ] **Containerization:** Multi-stage distroless `Dockerfile`s (`CGO_ENABLED=0`, non-root user) for all services. Turnkey `docker-compose.yml` including PostgreSQL Auth DB.
-- [ ] **Kubernetes Manifests (GKE / Cloud K8s):**
-  - **`gateway-svc` (Deployment):** Stateless, HPA autoscaling, Cloud L4 Network Load Balancer (NLB) on ports `:9000` (S3) and `:9001` (Console).
+## Week 4: Cloud Kubernetes (GKE) Deployment & Chaos Testing (Lightweight Ops Sprint)
+*(Zero new feature code written in Week 4. Dedicated exclusively to learning GCP, deploying to GKE, and running verification tests.)*
+- [ ] **GCP & Cloud Onboarding:**
+  - Set up GCP Project, configure `gcloud` CLI, VPC networking, and cloud IAM credentials.
+  - Provision a 3-node Google Kubernetes Engine (GKE) cluster across 3 Availability Zones.
+- [ ] **Kubernetes Manifests (GKE Deployment):**
+  - **`gateway-svc` (Deployment):** Stateless, HPA autoscaling, Cloud L4 Network Load Balancer (NLB) on ports `:9000` (S3) and `:9001` (BFF API).
+  - **`castor-ui` (Deployment):** Lightweight Nginx container (~15MB) with Ingress path routing (`/*` to UI, `/api/*` to `gateway-svc:9001`).
   - **`auth-svc` (Deployment):** Connected to Cloud SQL PostgreSQL or stateful PVC.
   - **`metadata-svc` (StatefulSet):** 3 replicas, Headless Service for Raft DNS (`meta-0.meta-svc`), NVMe/SSD PVCs (`/data/badger`), `topologySpreadConstraints` across 3 Availability Zones.
   - **`data-svc` (StatefulSet):** 3+ replicas, dedicated PVCs (`/data/chunks`).
@@ -108,6 +121,6 @@
 | Week | Focus | Core Deliverable |
 |---|---|---|
 | **Week 1** | **Storage, Consensus & Gateway MVP (CLI Slice)** | 3 core services up (`gateway-svc`, `metadata-svc`, `data-svc`). Working `aws s3` CLI for bucket & object CRUD with static/bootstrap auth. |
-| **Week 2** | **Dynamic Auth, Dedup, S3 Enhancements & Presigned URLs** | `auth-svc` (PostgreSQL/SQLite) + dynamic SigV4 validation + inline SHA-256 dedup + `ListObjectsV2` + `Range` GET + presigned URLs + metrics. |
-| **Week 3** | **Multipart, Self-Healing, Console & Bit-Rot Scrubber** | S3 multipart upload + leader GC worker + bit-rot scrubber (7-day cycle, read-repair) + embedded Web Console UI on `:9001`. |
-| **Week 4** | **Cloud K8s & Chaos** | Distroless containers + GKE StatefulSets/NLB deployment + live chaos testing. |
+| **Week 2** | **Auth, Docker, Ingress & Console MVP** | `auth-svc` (PostgreSQL/SQLite) + dynamic SigV4 validation + `Range`/`ListObjectsV2` + local `docker-compose` cluster + `castor-ui` MVP (Login & S3 Keys). |
+| **Week 3** | **Multipart, Dedup, Resilience & Full UI** | S3 multipart uploads + inline dedup + leader GC & bit-rot scrubber + `castor-ui` v2 (Bucket/Object Explorer & Cluster Health Dashboard). |
+| **Week 4** | **Cloud K8s & Chaos (Lightweight Ops Sprint)** | GCP/GKE onboarding + translate Compose to GKE StatefulSets/Deployments/Ingress + live chaos tests (zero new application code). |

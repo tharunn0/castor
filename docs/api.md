@@ -9,7 +9,7 @@ This document serves as the comprehensive and definitive API reference for Casto
 Castor exposes three tiers of interfaces:
 1. **External Client & Console APIs**:
    - **S3-Compatible HTTP/REST API** (`:9000` on `gateway-svc`): Full compatibility with AWS CLI, AWS SDKs (`boto3`, `@aws-sdk/client-s3`), and S3 tools (`rclone`). Serves `/healthz` and `/metrics`.
-   - **Web Console & BFF API** (`:9001` on `gateway-svc`): Serves the embedded single-page UI and browser-tailored JSON endpoints (`/api/*`).
+   - **Browser JSON BFF API** (`:9001` on `gateway-svc`): Headless JSON endpoints (`/api/*`) with CORS support powering the decoupled `castor-ui` console.
 2. **Control Plane & Auth API**:
    - **Auth Service HTTP API** (`:9095` on `auth-svc`): User registration, JWT login, S3 API keypair creation, and internal credential validation. Backed by PostgreSQL or SQLite.
 3. **Internal Cluster APIs (Inter-Service gRPC & Admin HTTP)**:
@@ -18,14 +18,14 @@ Castor exposes three tiers of interfaces:
 
 ```mermaid
 flowchart TD
-    subgraph ExternalClients["External Clients & Operators"]
+    subgraph ExternalClients["External Clients & Presentation"]
         S3Client["S3 Clients (aws-cli, boto3, rclone, curl)"]
-        BrowserUI["Web Browser Console (embed.FS UI)"]
+        BrowserUI["Web Browser Console (castor-ui)"]
     end
 
     subgraph GatewayLayer["Gateway Layer (gateway-svc)"]
         REST_FE["S3 REST API Frontend (:9000 HTTP)<br/>• S3 REST Operations<br/>• /healthz & /metrics<br/>• In-Memory Credential Cache"]
-        Console_FE["Web Console & BFF (:9001 HTTP)<br/>• Serves Static UI Assets<br/>• Browser API (/api/*)<br/>• In-Process Upload Bridge"]
+        Console_FE["Headless BFF API (:9001 HTTP)<br/>• Browser JSON API (/api/*)<br/>• CORS & Session Validation<br/>• In-Process Upload Bridge"]
     end
 
     subgraph ControlPlane["Control Plane (auth-svc)"]
@@ -340,9 +340,8 @@ Exposed directly by `metadata-svc` nodes (with the active leader handling state 
 - `GET /admin/scrub/status`: Returns JSON with current scrubber state: `{running, progress_ratio, chunks_verified, corruptions_found, last_completed_at, cursor_position}`.
 - `POST /admin/scrub/trigger`: Triggers an immediate scrub sweep on the Raft leader, resetting the cursor. Accepts `?dry_run=true` to report corruption without triggering repair.
 
-### 4.3. Web Console & BFF Endpoints (`gateway-svc :9001`)
-Exposed by `gateway-svc` to serve the embedded single-page UI and browser operations:
-- `GET /`: Serves precompiled static dashboard assets (HTML/CSS/JS) via Go `embed.FS`.
+### 4.3. Browser BFF API Endpoints (`gateway-svc :9001`)
+Exposed by `gateway-svc` to power the standalone operator web console (`castor-ui`) and browser operations (with CORS enabled for the console origin):
 - `POST /api/auth/login`: Accepts `{username, password}`, validates against `auth-svc`, and sets an `HttpOnly; SameSite=Strict` JWT session cookie.
 - `POST /api/auth/logout`: Clears the session cookie.
 - `GET /api/cluster/health`: Aggregates Raft leader status and storage node capacities into a unified JSON payload for UI visualization.

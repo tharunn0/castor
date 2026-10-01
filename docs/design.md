@@ -20,7 +20,7 @@ Castor decouples **stateless protocol & console ingress**, **identity management
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
 │ gateway-svc [xN] (Stateless Front Door & Management)                                   │
 │ • Port :9000: S3 REST Engine (versitygw, SigV4 Auth, 4MB Chunking, Dedup, W=2 Quorum)  │
-│ • Port :9001: Embedded Web Console & BFF (embed.FS, JWT Sessions, In-Process Bridge)    │
+│ • Port :9001: Headless Browser BFF (JSON API, CORS, JWT Sessions, In-Process Bridge)   │
 │ • Local Credential LRU Cache (30s TTL, avoids DB bottleneck)                          │
 └───────────────────┬─────────────────────────────────┬───────────────────┬──────────────┘
                     │ gRPC (metadata)                 │ gRPC (chunks)     │ HTTP/REST
@@ -34,7 +34,7 @@ Castor decouples **stateless protocol & console ingress**, **identity management
 
 1. **`gateway-svc` (Stateless Front Door, Ports `:9000` & `:9001`)**:
    - **Port `:9000` (S3 REST Engine)**: Embeds `versitygw` to provide Amazon S3 REST compatibility (Path-style, dynamic SigV4 authentication via `auth-svc`, XML marshaling). Ingress chunking engine streams payloads disklessly through 4MB memory buffers (`sync.Pool`), computes SHA-256 hashes, queries deduplication, and coordinates $W=2$ quorum writes.
-   - **Port `:9001` (Embedded Web Console & BFF)**: Serves a precompiled, single-page web console embedded via Go `embed.FS`. Exposes browser-tailored JSON endpoints for user authentication, S3 key generation, file browsing/uploads, live cluster health telemetry, and presigned URL generation (`POST /api/files/presign`).
+   - **Port `:9001` (Headless Browser BFF API)**: Headless JSON API with CORS support powering the decoupled `castor-ui` console. Exposes endpoints for user authentication, S3 key generation, file browsing/uploads, live cluster health telemetry, and presigned URL generation (`POST /api/files/presign`).
    - **In-Memory Credential Cache**: Maintains a short-lived (30s TTL) LRU cache of active S3 credentials to prevent database connection saturation during high-throughput S3 streams.
    - Horizontally scalable behind a layer 4 or layer 7 load balancer.
 
