@@ -1,0 +1,12 @@
+.git
+.github
+.gitignore
+*.tmp
+tmp/
+data/
+*.db
+*.log
+bin/
+dist/
+.DS_Store
+AGENTS.md

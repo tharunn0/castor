@@ -1,0 +1,136 @@
+services:
+  # Metadata Consensus Cluster (3 Nodes)
+  metadata-1:
+    build:
+      context: .
+      target: metadata-svc
+    image: castor-metadata-svc:latest
+    container_name: castor-metadata-1
+    environment:
+      - NODE_ID=metadata-1
+      - GRPC_ADDR=:9090
+      - RAFT_ADDR=:9091
+      - DATA_DIR=/data
+      - RAFT_BOOTSTRAP=true
+      - RAFT_PEERS=metadata-1=metadata-1:9091,metadata-2=metadata-2:9091,metadata-3=metadata-3:9091
+    ports:
+      - "9090:9090"
+      - "9091:9091"
+    volumes:
+      - metadata-1-data:/data
+    networks:
+      - castor-net
+    restart: unless-stopped
+
+  metadata-2:
+    build:
+      context: .
+      target: metadata-svc
+    image: castor-metadata-svc:latest
+    container_name: castor-metadata-2
+    environment:
+      - NODE_ID=metadata-2
+      - GRPC_ADDR=:9090
+      - RAFT_ADDR=:9091
+      - DATA_DIR=/data
+      - RAFT_BOOTSTRAP=false
+      - RAFT_PEERS=metadata-1=metadata-1:9091,metadata-2=metadata-2:9091,metadata-3=metadata-3:9091
+    ports:
+      - "9092:9090"
+    volumes:
+      - metadata-2-data:/data
+    networks:
+      - castor-net
+    depends_on:
+      - metadata-1
+    restart: unless-stopped
+
+  metadata-3:
+    build:
+      context: .
+      target: metadata-svc
+    image: castor-metadata-svc:latest
+    container_name: castor-metadata-3
+    environment:
+      - NODE_ID=metadata-3
+      - GRPC_ADDR=:9090
+      - RAFT_ADDR=:9091
+      - DATA_DIR=/data
+      - RAFT_BOOTSTRAP=false
+      - RAFT_PEERS=metadata-1=metadata-1:9091,metadata-2=metadata-2:9091,metadata-3=metadata-3:9091
+    ports:
+      - "9094:9090"
+    volumes:
+      - metadata-3-data:/data
+    networks:
+      - castor-net
+    depends_on:
+      - metadata-1
+    restart: unless-stopped
+
+  # Storage Data Nodes (3 Nodes)
+  data-1:
+    build:
+      context: .
+      target: data-svc
+    image: castor-data-svc:latest
+    container_name: castor-data-1
+    environment:
+      - NODE_ID=data-1
+      - GRPC_ADDR=:9101
+      - DATA_DIR=/data
+    ports:
+      - "9101:9101"
+    volumes:
+      - data-1-data:/data
+    networks:
+      - castor-net
+    restart: unless-stopped
+
+  data-2:
+    build:
+      context: .
+      target: data-svc
+    image: castor-data-svc:latest
+    container_name: castor-data-2
+    environment:
+      - NODE_ID=data-2
+      - GRPC_ADDR=:9101
+      - DATA_DIR=/data
+    ports:
+      - "9102:9101"
+    volumes:
+      - data-2-data:/data
+    networks:
+      - castor-net
+    restart: unless-stopped
+
+  data-3:
+    build:
+      context: .
+      target: data-svc
+    image: castor-data-svc:latest
+    container_name: castor-data-3
+    environment:
+      - NODE_ID=data-3
+      - GRPC_ADDR=:9101
+      - DATA_DIR=/data
+    ports:
+      - "9103:9101"
+    volumes:
+      - data-3-data:/data
+    networks:
+      - castor-net
+    restart: unless-stopped
+
+volumes:
+  metadata-1-data:
+  metadata-2-data:
+  metadata-3-data:
+  data-1-data:
+  data-2-data:
+  data-3-data:
+
+networks:
+  castor-net:
+    driver: bridge
