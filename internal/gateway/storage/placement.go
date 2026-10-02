@@ -20,6 +20,7 @@ var (
 	ErrNoNodes      = errors.New("storage: no storage nodes available")
 )
 
+// PlacementManager manages and interacts with data nodes
 type PlacementManager struct {
 	mu          sync.RWMutex
 	nodeAddrs   []string

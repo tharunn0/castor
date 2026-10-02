@@ -18,6 +18,7 @@ var (
 	ErrBucketNotFound = errors.New("bucket not found")
 )
 
+// StorageEngine manages bufferpool, placement manager and maintains connection with metadata service
 type StorageEngine struct {
 	cfg        config.Config
 	metaClient castorv1.MetadataServiceClient
