@@ -78,6 +78,7 @@ func (m *PlacementManager) WriteChunkQuorum(ctx context.Context, chunkHash strin
 	defer cancel()
 
 	resCh := make(chan writeResult, len(targets))
+
 	for _, target := range targets {
 		go func(addr string) {
 			err := m.StreamChunkToNode(writeCtx, addr, chunkHash, data)

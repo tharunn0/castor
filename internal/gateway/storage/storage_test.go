@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net"
 	"path/filepath"
 	"strings"
@@ -50,12 +51,7 @@ func TestStorageEngineSignatures(t *testing.T) {
 	defer engine.Close()
 
 	ctx := context.Background()
-	_, _, err := engine.GetObject(ctx, "test-bucket", "test-key")
-	if !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("expected ErrNotImplemented, got %v", err)
-	}
-
-	err = engine.DeleteObject(ctx, "test-bucket", "test-key")
+	err := engine.DeleteObject(ctx, "test-bucket", "test-key")
 	if !errors.Is(err, ErrNotImplemented) {
 		t.Fatalf("expected ErrNotImplemented, got %v", err)
 	}
@@ -226,3 +222,151 @@ func TestStorageEngine_PutObject(t *testing.T) {
 		t.Fatalf("zero-byte etag mismatch: expected %s, got %s", emptyETag, zeroETag)
 	}
 }
+
+func TestStorageEngine_GetObject(t *testing.T) {
+	node1Addr, cleanup1 := startTestDataNode(t, "data-1")
+	defer cleanup1()
+	node2Addr, cleanup2 := startTestDataNode(t, "data-2")
+	defer cleanup2()
+	node3Addr, cleanup3 := startTestDataNode(t, "data-3")
+	defer cleanup3()
+
+	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-1")
+	defer metaCleanup()
+
+	cfg := config.Config{
+		ChunkSize:            4 << 20,
+		WriteQuorum:          2,
+		MaxConcurrentUploads: 4,
+		DataNodes:            []string{node1Addr, node2Addr, node3Addr},
+	}
+
+	engine := New(cfg, metaClient)
+	defer engine.Close()
+
+	ctx := context.Background()
+
+	// 1. Validation errors
+	if _, _, err := engine.GetObject(ctx, "", "key"); err == nil {
+		t.Fatal("expected error for empty bucket")
+	}
+	if _, _, err := engine.GetObject(ctx, "bucket", ""); err == nil {
+		t.Fatal("expected error for empty key")
+	}
+
+	// 2. Bucket does not exist
+	if _, _, err := engine.GetObject(ctx, "nonexistent-bucket", "obj1"); !errors.Is(err, ErrBucketNotFound) {
+		t.Fatalf("expected ErrBucketNotFound, got %v", err)
+	}
+
+	// Create bucket
+	bucketName := "test-get-bucket"
+	_, err := metaClient.CreateBucket(ctx, &castorv1.CreateBucketMetadataRequest{
+		Bucket:  bucketName,
+		OwnerId: "user1",
+	})
+	if err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	// 3. Object does not exist
+	if _, _, err := engine.GetObject(ctx, bucketName, "nonexistent-key"); !errors.Is(err, ErrObjectNotFound) {
+		t.Fatalf("expected ErrObjectNotFound, got %v", err)
+	}
+
+	// 4. Zero-byte GetObject
+	_, err = engine.PutObject(ctx, bucketName, "empty.txt", "user1", bytes.NewReader(nil), 0)
+	if err != nil {
+		t.Fatalf("failed to put zero-byte object: %v", err)
+	}
+	rc, info, err := engine.GetObject(ctx, bucketName, "empty.txt")
+	if err != nil {
+		t.Fatalf("failed to get zero-byte object: %v", err)
+	}
+	defer rc.Close()
+	if info.Size != 0 {
+		t.Fatalf("expected size 0, got %d", info.Size)
+	}
+	emptyData, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("failed reading zero-byte object: %v", err)
+	}
+	if len(emptyData) != 0 {
+		t.Fatalf("expected 0 bytes, got %d", len(emptyData))
+	}
+
+	// 5. Multi-chunk GetObject (5MiB payload > 4MiB system chunk size)
+	payload := make([]byte, 5*1024*1024)
+	_, _ = rand.Read(payload)
+	h := sha256.Sum256(payload)
+	expectedETag := hex.EncodeToString(h[:])
+
+	putETag, err := engine.PutObject(ctx, bucketName, "multi.bin", "user1", bytes.NewReader(payload), int64(len(payload)))
+	if err != nil {
+		t.Fatalf("failed to put multi-chunk object: %v", err)
+	}
+	if putETag != expectedETag {
+		t.Fatalf("etag mismatch: expected %s, got %s", expectedETag, putETag)
+	}
+
+	rc, info, err = engine.GetObject(ctx, bucketName, "multi.bin")
+	if err != nil {
+		t.Fatalf("failed to get multi-chunk object: %v", err)
+	}
+	defer rc.Close()
+
+	if info.Size != int64(len(payload)) {
+		t.Fatalf("size mismatch: expected %d, got %d", len(payload), info.Size)
+	}
+	if info.ETag != expectedETag {
+		t.Fatalf("etag mismatch: expected %s, got %s", expectedETag, info.ETag)
+	}
+
+	readData, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("failed to read full object: %v", err)
+	}
+	if !bytes.Equal(readData, payload) {
+		t.Fatal("read content does not match uploaded payload")
+	}
+
+	// 6. Range read spanning across chunk boundary
+	rangeStart := int64((4 << 20) - 50)
+	rangeLen := int64(100)
+	expectedRangeBytes := payload[rangeStart : rangeStart+rangeLen]
+
+	rangeRc, rangeInfo, err := engine.GetObjectRange(ctx, bucketName, "multi.bin", rangeStart, rangeLen)
+	if err != nil {
+		t.Fatalf("failed to get object range: %v", err)
+	}
+	defer rangeRc.Close()
+	if rangeInfo.Size != int64(len(payload)) {
+		t.Fatalf("range info size mismatch: expected %d, got %d", len(payload), rangeInfo.Size)
+	}
+
+	rangeData, err := io.ReadAll(rangeRc)
+	if err != nil {
+		t.Fatalf("failed to read range data: %v", err)
+	}
+	if !bytes.Equal(rangeData, expectedRangeBytes) {
+		t.Fatal("range data mismatch across chunk boundary")
+	}
+
+	// 7. Replica failover: shut down node 1 and verify GetObject still works from surviving replicas
+	cleanup1()
+
+	failoverRc, _, err := engine.GetObject(ctx, bucketName, "multi.bin")
+	if err != nil {
+		t.Fatalf("failed to get object after replica shutdown: %v", err)
+	}
+	defer failoverRc.Close()
+
+	failoverData, err := io.ReadAll(failoverRc)
+	if err != nil {
+		t.Fatalf("failed to read object data with replica failover: %v", err)
+	}
+	if !bytes.Equal(failoverData, payload) {
+		t.Fatal("failover read content does not match uploaded payload")
+	}
+}
+
