@@ -370,3 +370,47 @@ func TestStorageEngine_GetObject(t *testing.T) {
 	}
 }
 
+func TestStorageEngine_CreateBucket(t *testing.T) {
+	metaAddr, metaClient, metaCleanup := startTestMetadataNode(t, "meta-cb")
+	defer metaCleanup()
+
+	cfg := config.Config{
+		ChunkSize:            4096,
+		WriteQuorum:          2,
+		MaxConcurrentUploads: 4,
+		DataNodes:            []string{"127.0.0.1:9101"},
+		MetadataAddr:         metaAddr,
+	}
+
+	engine := New(cfg, metaClient)
+	defer engine.Close()
+
+	ctx := context.Background()
+
+	// 1. Validation error on empty bucket name
+	if err := engine.CreateBucket(ctx, "", "admin", nil); err == nil {
+		t.Fatal("expected error on empty bucket name, got nil")
+	}
+
+	// 2. Successful bucket creation
+	bucketName := "new-bucket"
+	if err := engine.CreateBucket(ctx, bucketName, "admin", map[string]string{"env": "test"}); err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	// 3. Verify bucket exists in metadata
+	existsResp, err := metaClient.CheckBucketExists(ctx, &castorv1.CheckBucketExistsRequest{Bucket: bucketName})
+	if err != nil {
+		t.Fatalf("CheckBucketExists failed: %v", err)
+	}
+	if !existsResp.GetExists() {
+		t.Fatal("expected bucket to exist in metadata-svc")
+	}
+
+	// 4. Duplicate bucket creation returns ErrBucketAlreadyExists
+	if err := engine.CreateBucket(ctx, bucketName, "admin", nil); !errors.Is(err, ErrBucketAlreadyExists) {
+		t.Fatalf("expected ErrBucketAlreadyExists on duplicate create, got %v", err)
+	}
+}
+
+

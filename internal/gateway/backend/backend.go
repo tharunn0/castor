@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -22,6 +23,8 @@ type CastorBackend struct {
 	engine     *storage.StorageEngine
 	metaClient castorv1.MetadataServiceClient
 }
+
+var _ backend.Backend = (*CastorBackend)(nil)
 
 func New(engine *storage.StorageEngine, metaClient castorv1.MetadataServiceClient) *CastorBackend {
 	return &CastorBackend{
@@ -197,3 +200,41 @@ func (b *CastorBackend) GetObject(ctx context.Context, input *s3.GetObjectInput)
 	return out, nil
 }
 
+func (b *CastorBackend) CreateBucket(ctx context.Context, req *s3.CreateBucketInput, defaultACL []byte) error {
+	if req == nil || req.Bucket == nil || *req.Bucket == "" {
+		return s3err.GetAPIError(s3err.ErrInvalidBucketName)
+	}
+
+	ownerID := "admin"
+	if len(defaultACL) > 0 {
+		var acl struct {
+			Owner string `json:"Owner"`
+		}
+		if err := json.Unmarshal(defaultACL, &acl); err == nil && acl.Owner != "" {
+			ownerID = acl.Owner
+		}
+	}
+
+	var tags map[string]string
+	if req.CreateBucketConfiguration != nil && len(req.CreateBucketConfiguration.Tags) > 0 {
+		tags = make(map[string]string, len(req.CreateBucketConfiguration.Tags))
+		for _, tag := range req.CreateBucketConfiguration.Tags {
+			if tag.Key != nil && tag.Value != nil {
+				tags[*tag.Key] = *tag.Value
+			}
+		}
+	}
+
+	err := b.engine.CreateBucket(ctx, *req.Bucket, ownerID, tags)
+	if err != nil {
+		if errors.Is(err, storage.ErrBucketAlreadyExists) {
+			return s3err.GetBucketErr(s3err.ErrBucketAlreadyOwnedByYou, *req.Bucket)
+		}
+		if s, ok := status.FromError(err); ok && s.Code() == codes.AlreadyExists {
+			return s3err.GetBucketErr(s3err.ErrBucketAlreadyOwnedByYou, *req.Bucket)
+		}
+		return err
+	}
+
+	return nil
+}

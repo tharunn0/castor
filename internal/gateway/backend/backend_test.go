@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
 	dataconfig "github.com/tharunn0/castor/internal/data/config"
 	dataserver "github.com/tharunn0/castor/internal/data/server"
@@ -443,4 +444,66 @@ func TestCastorBackend_GetObject(t *testing.T) {
 		t.Fatal("multi-chunk body does not match uploaded payload")
 	}
 }
+
+func TestCastorBackend_CreateBucket(t *testing.T) {
+	nodeAddr, cleanupNode := startTestDataNode(t, "data-cb")
+	defer cleanupNode()
+
+	metaAddr, metaClient, metaCleanup := startTestMetadataNode(t, "meta-cb")
+	defer metaCleanup()
+
+	cfg := config.Config{
+		ChunkSize:            4096,
+		WriteQuorum:          1,
+		MaxConcurrentUploads: 2,
+		DataNodes:            []string{nodeAddr},
+		MetadataAddr:         metaAddr,
+	}
+
+	engine := storage.New(cfg, metaClient)
+	defer engine.Close()
+
+	be := New(engine, metaClient)
+	ctx := context.Background()
+
+	// 1. Invalid bucket name (nil, empty)
+	if err := be.CreateBucket(ctx, nil, nil); !errors.Is(err, s3err.GetAPIError(s3err.ErrInvalidBucketName)) {
+		t.Fatalf("expected ErrInvalidBucketName on nil req, got %v", err)
+	}
+
+	emptyBucket := ""
+	if err := be.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: &emptyBucket}, nil); !errors.Is(err, s3err.GetAPIError(s3err.ErrInvalidBucketName)) {
+		t.Fatalf("expected ErrInvalidBucketName on empty bucket, got %v", err)
+	}
+
+	// 2. Successful bucket creation with ACL and tags
+	bucketName := "my-new-bucket"
+	tagKey := "project"
+	tagVal := "castor"
+	aclJSON := []byte(`{"Owner":"admin","Grants":[]}`)
+	createReq := &s3.CreateBucketInput{
+		Bucket: &bucketName,
+		CreateBucketConfiguration: &types.CreateBucketConfiguration{
+			Tags: []types.Tag{
+				{Key: &tagKey, Value: &tagVal},
+			},
+		},
+	}
+	if err := be.CreateBucket(ctx, createReq, aclJSON); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	// 3. HeadBucket confirms bucket exists
+	if _, err := be.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: &bucketName}); err != nil {
+		t.Fatalf("HeadBucket failed after CreateBucket: %v", err)
+	}
+
+	// 4. Duplicate bucket creation returns ErrBucketAlreadyOwnedByYou
+	dupErr := be.CreateBucket(ctx, createReq, aclJSON)
+	expectedDupErr := s3err.GetBucketErr(s3err.ErrBucketAlreadyOwnedByYou, bucketName)
+	if !errors.Is(dupErr, expectedDupErr) {
+		t.Fatalf("expected ErrBucketAlreadyOwnedByYou, got %v", dupErr)
+	}
+}
+
 

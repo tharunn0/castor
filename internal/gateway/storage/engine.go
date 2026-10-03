@@ -17,9 +17,10 @@ import (
 )
 
 var (
-	ErrNotImplemented = errors.New("not implemented yet")
-	ErrBucketNotFound = errors.New("bucket not found")
-	ErrObjectNotFound = errors.New("object not found")
+	ErrNotImplemented      = errors.New("not implemented yet")
+	ErrBucketNotFound      = errors.New("bucket not found")
+	ErrBucketAlreadyExists = errors.New("bucket already exists")
+	ErrObjectNotFound      = errors.New("object not found")
 )
 
 type ObjectInfo struct {
@@ -335,4 +336,27 @@ func (e *StorageEngine) DeleteObject(ctx context.Context, bucket, key string) er
 
 func (e *StorageEngine) Close() error {
 	return e.placement.Close()
+}
+
+func (e *StorageEngine) CreateBucket(ctx context.Context, bucket, ownerID string, tags map[string]string) error {
+	if bucket == "" {
+		return errors.New("bucket name is required")
+	}
+	if ownerID == "" {
+		ownerID = "admin"
+	}
+
+	_, err := e.metaClient.CreateBucket(ctx, &castorv1.CreateBucketMetadataRequest{
+		Bucket:  bucket,
+		OwnerId: ownerID,
+		Tags:    tags,
+	})
+	if err != nil {
+		if s, ok := status.FromError(err); ok && s.Code() == codes.AlreadyExists {
+			return ErrBucketAlreadyExists
+		}
+		return err
+	}
+
+	return nil
 }
