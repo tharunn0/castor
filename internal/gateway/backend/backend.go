@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -238,3 +239,52 @@ func (b *CastorBackend) CreateBucket(ctx context.Context, req *s3.CreateBucketIn
 
 	return nil
 }
+
+func (b *CastorBackend) ListBuckets(ctx context.Context, input s3response.ListBucketsInput) (s3response.ListAllMyBucketsResult, error) {
+	bucketInfos, err := b.engine.ListBuckets(ctx)
+	if err != nil {
+		return s3response.ListAllMyBucketsResult{}, err
+	}
+
+	var entries []s3response.ListAllMyBucketsEntry
+	var cToken string
+
+	for _, info := range bucketInfos {
+		if input.Prefix != "" && !strings.HasPrefix(info.Name, input.Prefix) {
+			continue
+		}
+		if input.ContinuationToken != "" && info.Name <= input.ContinuationToken {
+			continue
+		}
+		if !input.IsAdmin && input.Owner != "" && info.OwnerID != "" && info.OwnerID != input.Owner {
+			continue
+		}
+		if input.MaxBuckets > 0 && len(entries) == int(input.MaxBuckets) {
+			cToken = entries[len(entries)-1].Name
+			break
+		}
+
+		entries = append(entries, s3response.ListAllMyBucketsEntry{
+			Name:         info.Name,
+			CreationDate: info.CreatedAt,
+		})
+	}
+
+	ownerID := input.Owner
+	if ownerID == "" {
+		ownerID = "admin"
+	}
+
+	return s3response.ListAllMyBucketsResult{
+		Buckets: s3response.ListAllMyBucketsList{
+			Bucket: entries,
+		},
+		Owner: s3response.CanonicalUser{
+			ID:          ownerID,
+			DisplayName: ownerID,
+		},
+		Prefix:            input.Prefix,
+		ContinuationToken: cToken,
+	}, nil
+}
+

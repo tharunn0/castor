@@ -413,4 +413,59 @@ func TestStorageEngine_CreateBucket(t *testing.T) {
 	}
 }
 
+func TestStorageEngine_ListBuckets(t *testing.T) {
+	metaAddr, metaClient, metaCleanup := startTestMetadataNode(t, "meta-list-b")
+	defer metaCleanup()
+
+	cfg := config.Config{
+		ChunkSize:            4096,
+		WriteQuorum:          2,
+		MaxConcurrentUploads: 4,
+		DataNodes:            []string{"127.0.0.1:9101"},
+		MetadataAddr:         metaAddr,
+	}
+
+	engine := New(cfg, metaClient)
+	defer engine.Close()
+
+	ctx := context.Background()
+
+	initialBuckets, err := engine.ListBuckets(ctx)
+	if err != nil {
+		t.Fatalf("ListBuckets on empty metadata failed: %v", err)
+	}
+	if len(initialBuckets) != 0 {
+		t.Fatalf("expected 0 buckets, got %d", len(initialBuckets))
+	}
+
+	b1 := "alpha-bucket"
+	b2 := "beta-bucket"
+	if err := engine.CreateBucket(ctx, b1, "user-1", nil); err != nil {
+		t.Fatalf("failed to create bucket 1: %v", err)
+	}
+	if err := engine.CreateBucket(ctx, b2, "user-2", nil); err != nil {
+		t.Fatalf("failed to create bucket 2: %v", err)
+	}
+
+	buckets, err := engine.ListBuckets(ctx)
+	if err != nil {
+		t.Fatalf("ListBuckets failed: %v", err)
+	}
+	if len(buckets) != 2 {
+		t.Fatalf("expected 2 buckets, got %d", len(buckets))
+	}
+
+	found := make(map[string]string)
+	for _, b := range buckets {
+		found[b.Name] = b.OwnerID
+	}
+	if found[b1] != "user-1" {
+		t.Fatalf("expected bucket %s owner 'user-1', got '%s'", b1, found[b1])
+	}
+	if found[b2] != "user-2" {
+		t.Fatalf("expected bucket %s owner 'user-2', got '%s'", b2, found[b2])
+	}
+}
+
+
 

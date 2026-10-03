@@ -152,4 +152,21 @@ func TestIntegration_GatewayCreateBucket(t *testing.T) {
 			t.Fatalf("expected BucketAlreadyOwnedByYou or 409 Conflict, got: %v", err)
 		}
 	}
+
+	// 4. ListBuckets over S3 REST confirms bucket appears in listing
+	listOut, err := s3Client.ListBuckets(context.Background(), &s3.ListBucketsInput{})
+	if err != nil {
+		t.Fatalf("ListBuckets failed over S3 REST: %v", err)
+	}
+	var foundBucket bool
+	for _, b := range listOut.Buckets {
+		if b.Name != nil && *b.Name == bucketName {
+			foundBucket = true
+			break
+		}
+	}
+	if !foundBucket {
+		t.Fatalf("expected bucket %s in ListBuckets output, got: %v", bucketName, listOut.Buckets)
+	}
 }
+

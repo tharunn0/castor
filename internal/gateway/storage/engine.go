@@ -32,6 +32,12 @@ type ObjectInfo struct {
 	UpdatedAt   time.Time
 }
 
+type BucketInfo struct {
+	Name      string
+	OwnerID   string
+	CreatedAt time.Time
+}
+
 // StorageEngine manages bufferpool, placement manager and maintains connection with metadata service
 type StorageEngine struct {
 	cfg        config.Config
@@ -360,3 +366,26 @@ func (e *StorageEngine) CreateBucket(ctx context.Context, bucket, ownerID string
 
 	return nil
 }
+
+func (e *StorageEngine) ListBuckets(ctx context.Context) ([]BucketInfo, error) {
+	resp, err := e.metaClient.ListBuckets(ctx, &castorv1.ListBucketsMetadataRequest{})
+	if err != nil {
+		return nil, err
+	}
+
+	buckets := make([]BucketInfo, 0, len(resp.GetBuckets()))
+	for _, b := range resp.GetBuckets() {
+		var createdAt time.Time
+		if b.GetCreatedAt() != nil {
+			createdAt = b.GetCreatedAt().AsTime()
+		}
+		buckets = append(buckets, BucketInfo{
+			Name:      b.GetName(),
+			OwnerID:   b.GetOwnerId(),
+			CreatedAt: createdAt,
+		})
+	}
+
+	return buckets, nil
+}
+

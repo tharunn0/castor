@@ -506,4 +506,92 @@ func TestCastorBackend_CreateBucket(t *testing.T) {
 	}
 }
 
+func TestCastorBackend_ListBuckets(t *testing.T) {
+	nodeAddr, cleanupNode := startTestDataNode(t, "data-list-b")
+	defer cleanupNode()
+
+	metaAddr, metaClient, metaCleanup := startTestMetadataNode(t, "meta-list-b")
+	defer metaCleanup()
+
+	cfg := config.Config{
+		ChunkSize:            4096,
+		WriteQuorum:          1,
+		MaxConcurrentUploads: 2,
+		DataNodes:            []string{nodeAddr},
+		MetadataAddr:         metaAddr,
+	}
+
+	engine := storage.New(cfg, metaClient)
+	defer engine.Close()
+
+	be := New(engine, metaClient)
+	ctx := context.Background()
+
+	// 1. Initial listing is empty
+	res, err := be.ListBuckets(ctx, s3response.ListBucketsInput{IsAdmin: true})
+	if err != nil {
+		t.Fatalf("ListBuckets on empty cluster failed: %v", err)
+	}
+	if len(res.Buckets.Bucket) != 0 {
+		t.Fatalf("expected 0 buckets, got %d", len(res.Buckets.Bucket))
+	}
+
+	// 2. Create multiple buckets
+	b1 := "prod-alpha"
+	b2 := "prod-beta"
+	b3 := "staging-gamma"
+	aclA := []byte(`{"Owner":"user-a","Grants":[]}`)
+	aclB := []byte(`{"Owner":"user-b","Grants":[]}`)
+
+	if err := be.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: &b1}, aclA); err != nil {
+		t.Fatalf("failed to create b1: %v", err)
+	}
+	if err := be.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: &b2}, aclB); err != nil {
+		t.Fatalf("failed to create b2: %v", err)
+	}
+	if err := be.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: &b3}, aclA); err != nil {
+		t.Fatalf("failed to create b3: %v", err)
+	}
+
+	// 3. Admin listing returns all buckets
+	adminRes, err := be.ListBuckets(ctx, s3response.ListBucketsInput{IsAdmin: true})
+	if err != nil {
+		t.Fatalf("ListBuckets admin failed: %v", err)
+	}
+	if len(adminRes.Buckets.Bucket) != 3 {
+		t.Fatalf("expected 3 buckets, got %d", len(adminRes.Buckets.Bucket))
+	}
+
+	// 4. Prefix filter returns only matching buckets
+	prefixRes, err := be.ListBuckets(ctx, s3response.ListBucketsInput{IsAdmin: true, Prefix: "prod-"})
+	if err != nil {
+		t.Fatalf("ListBuckets prefix failed: %v", err)
+	}
+	if len(prefixRes.Buckets.Bucket) != 2 {
+		t.Fatalf("expected 2 prod- buckets, got %d", len(prefixRes.Buckets.Bucket))
+	}
+
+	// 5. User owner filter returns only user's buckets
+	userRes, err := be.ListBuckets(ctx, s3response.ListBucketsInput{Owner: "user-b"})
+	if err != nil {
+		t.Fatalf("ListBuckets user failed: %v", err)
+	}
+	if len(userRes.Buckets.Bucket) != 1 || userRes.Buckets.Bucket[0].Name != b2 {
+		t.Fatalf("expected 1 bucket %s for user-b, got %v", b2, userRes.Buckets.Bucket)
+	}
+
+	// 6. MaxBuckets pagination limit
+	pageRes, err := be.ListBuckets(ctx, s3response.ListBucketsInput{IsAdmin: true, MaxBuckets: 2})
+	if err != nil {
+		t.Fatalf("ListBuckets pagination failed: %v", err)
+	}
+	if len(pageRes.Buckets.Bucket) != 2 {
+		t.Fatalf("expected 2 buckets with MaxBuckets=2, got %d", len(pageRes.Buckets.Bucket))
+	}
+	if pageRes.ContinuationToken == "" {
+		t.Fatal("expected non-empty ContinuationToken when truncated")
+	}
+}
+
+
 
