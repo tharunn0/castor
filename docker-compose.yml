@@ -9,7 +9,7 @@ services:
     environment:
       - NODE_ID=metadata-1
       - GRPC_ADDR=:9090
-      - RAFT_ADDR=:9091
+      - RAFT_ADDR=metadata-1:9091
       - DATA_DIR=/data
       - RAFT_BOOTSTRAP=true
       - RAFT_PEERS=metadata-1=metadata-1:9091,metadata-2=metadata-2:9091,metadata-3=metadata-3:9091
@@ -31,7 +31,7 @@ services:
     environment:
       - NODE_ID=metadata-2
       - GRPC_ADDR=:9090
-      - RAFT_ADDR=:9091
+      - RAFT_ADDR=metadata-2:9091
       - DATA_DIR=/data
       - RAFT_BOOTSTRAP=false
       - RAFT_PEERS=metadata-1=metadata-1:9091,metadata-2=metadata-2:9091,metadata-3=metadata-3:9091
@@ -54,7 +54,7 @@ services:
     environment:
       - NODE_ID=metadata-3
       - GRPC_ADDR=:9090
-      - RAFT_ADDR=:9091
+      - RAFT_ADDR=metadata-3:9091
       - DATA_DIR=/data
       - RAFT_BOOTSTRAP=false
       - RAFT_PEERS=metadata-1=metadata-1:9091,metadata-2=metadata-2:9091,metadata-3=metadata-3:9091
@@ -121,6 +121,35 @@ services:
       - data-3-data:/data
     networks:
       - castor-net
+    restart: unless-stopped
+
+  # S3 API Gateway
+  gateway:
+    build:
+      context: .
+      target: gateway-svc
+    image: castor-gateway-svc:latest
+    container_name: castor-gateway
+    environment:
+      - S3_ADDR=:9000
+      - CONSOLE_ADDR=:9001
+      - METADATA_ADDR=metadata-1:9090
+      - DATA_NODES=data-1:9101,data-2:9101,data-3:9101
+      - ROOT_ACCESS_KEY_ID=admin
+      - ROOT_SECRET_ACCESS_KEY=admin123
+      - WRITE_QUORUM=2
+      - CHUNK_SIZE=4194304
+      - MAX_CONCURRENT_UPLOADS=64
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - castor-net
+    depends_on:
+      - metadata-1
+      - data-1
+      - data-2
+      - data-3
     restart: unless-stopped
 
 volumes:

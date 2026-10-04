@@ -54,3 +54,23 @@ USER nonroot:nonroot
 VOLUME ["/data"]
 EXPOSE 9101
 ENTRYPOINT ["/bin/data-svc"]
+
+# Build gateway-svc binary
+FROM builder AS build-gateway
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build \
+    -trimpath \
+    -ldflags="-s -w" \
+    -o /bin/gateway-svc ./cmd/gateway-svc
+
+# Final image: gateway-svc
+FROM gcr.io/distroless/static-debian12:nonroot AS gateway-svc
+WORKDIR /
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+COPY --from=build-gateway /bin/gateway-svc /bin/gateway-svc
+USER nonroot:nonroot
+EXPOSE 9000 9001
+ENTRYPOINT ["/bin/gateway-svc"]
+

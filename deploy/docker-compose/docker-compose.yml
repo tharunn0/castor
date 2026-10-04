@@ -123,6 +123,35 @@ services:
       - castor-net
     restart: unless-stopped
 
+  # S3 API Gateway
+  gateway:
+    build:
+      context: ../../
+      target: gateway-svc
+    image: castor-gateway-svc:latest
+    container_name: castor-gateway
+    environment:
+      - S3_ADDR=:9000
+      - CONSOLE_ADDR=:9001
+      - METADATA_ADDR=metadata-1:9090
+      - DATA_NODES=data-1:9101,data-2:9101,data-3:9101
+      - ROOT_ACCESS_KEY_ID=admin
+      - ROOT_SECRET_ACCESS_KEY=admin123
+      - WRITE_QUORUM=2
+      - CHUNK_SIZE=4194304
+      - MAX_CONCURRENT_UPLOADS=64
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - castor-net
+    depends_on:
+      - metadata-1
+      - data-1
+      - data-2
+      - data-3
+    restart: unless-stopped
+
 volumes:
   metadata-1-data:
   metadata-2-data:
@@ -134,3 +163,4 @@ volumes:
 networks:
   castor-net:
     driver: bridge
+
