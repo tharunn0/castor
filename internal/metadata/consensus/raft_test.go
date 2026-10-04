@@ -41,7 +41,7 @@ func newTestRaftNode(t *testing.T, nodeID string, raftAddr string, peers map[str
 		Peers:         peers,
 	}
 
-	node, err := NewRaftNode(cfg, fsm)
+	node, err := NewRaftNode(cfg, nil, fsm)
 	if err != nil {
 		t.Fatalf("failed to initialize raft node: %v", err)
 	}

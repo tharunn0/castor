@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -22,9 +23,10 @@ type RaftNode struct {
 	stableStore   raft.StableStore
 	snapshotStore raft.SnapshotStore
 	cfg           config.Config
+	logger        *slog.Logger
 }
 
-func NewRaftNode(cfg config.Config, fsm *FSM) (*RaftNode, error) {
+func NewRaftNode(cfg config.Config, logger *slog.Logger, fsm *FSM) (*RaftNode, error) {
 	raftDir := filepath.Join(cfg.DataDir, "raft")
 	if err := os.MkdirAll(raftDir, 0755); err != nil {
 		return nil, err
@@ -45,12 +47,12 @@ func NewRaftNode(cfg config.Config, fsm *FSM) (*RaftNode, error) {
 	raftAddr, err := net.ResolveTCPAddr("tcp", cfg.RaftAddr)
 	if err != nil {
 		_ = boltStore.Close()
-		return nil, err
+		return nil, fmt.Errorf("failed to resolve addr : %s, error: %w", cfg.RaftAddr, err)
 	}
-	transport, err := raft.NewTCPTransport(raftAddr.String(), nil, 3, 10*time.Second, io.Discard)
+	transport, err := raft.NewTCPTransport(raftAddr.String(), nil, 3, 10*time.Second, os.Stderr)
 	if err != nil {
 		_ = boltStore.Close()
-		return nil, err
+		return nil, fmt.Errorf("%w: addr : %s", err, raftAddr.String())
 	}
 
 	raftConfig := raft.DefaultConfig()
@@ -59,7 +61,7 @@ func NewRaftNode(cfg config.Config, fsm *FSM) (*RaftNode, error) {
 	raftConfig.ElectionTimeout = 200 * time.Millisecond
 	raftConfig.LeaderLeaseTimeout = 100 * time.Millisecond
 	raftConfig.CommitTimeout = 50 * time.Millisecond
-	raftConfig.LogOutput = io.Discard
+	raftConfig.LogOutput = os.Stderr
 
 	hasExistingState, err := raft.HasExistingState(boltStore, boltStore, snapshotStore)
 	if err != nil {
@@ -117,16 +119,21 @@ func NewRaftNode(cfg config.Config, fsm *FSM) (*RaftNode, error) {
 		snapshotStore: snapshotStore,
 		fsm:           fsm,
 		cfg:           cfg,
+		logger:        logger,
 	}, nil
 }
 
 func (r *RaftNode) Apply(cmd *Command, timeout time.Duration) (any, error) {
+
 	if r.raft == nil {
 		return nil, fmt.Errorf("raft not initialized")
 	}
 
+	r.logger.Debug("[Raft Apply]", "cmd Type :", cmd.Type)
+
 	data, err := cmd.Encode()
 	if err != nil {
+		r.logger.Error("[Raft Apply] Encode Error", "error", err)
 		return nil, err
 	}
 
@@ -140,7 +147,9 @@ func (r *RaftNode) Apply(cmd *Command, timeout time.Duration) (any, error) {
 		future := r.raft.Apply(data, timeout)
 		err := future.Error()
 		if err == nil {
+			r.logger.Debug("[Raft Apply] Success", "response", future.Response())
 			if res, ok := future.Response().(error); ok && res != nil {
+				r.logger.Error("[Raft Apply] Error", "error", res)
 				return res, nil
 			}
 			return future.Response(), nil
@@ -189,6 +198,7 @@ func (r *RaftNode) LeaderID() string {
 
 func (r *RaftNode) Join(nodeID string, addr string) error {
 	if r.raft == nil {
+		r.logger.Error("[Raft Join] Not Leader", "error", fmt.Errorf("raft not initialized"))
 		return fmt.Errorf("raft not initialized")
 	}
 	future := r.raft.AddVoter(raft.ServerID(nodeID), raft.ServerAddress(addr), 0, 0)

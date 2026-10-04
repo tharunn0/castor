@@ -37,7 +37,7 @@ func main() {
 	}
 
 	fsm := consensus.NewFSM(dbStore)
-	raftNode, err := consensus.NewRaftNode(cfg, fsm)
+	raftNode, err := consensus.NewRaftNode(cfg, logger, fsm)
 	if err != nil {
 		logger.Error("failed to initialize raft node", "error", err)
 		_ = dbStore.Close()
