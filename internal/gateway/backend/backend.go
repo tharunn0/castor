@@ -288,3 +288,31 @@ func (b *CastorBackend) ListBuckets(ctx context.Context, input s3response.ListBu
 	}, nil
 }
 
+func (b *CastorBackend) DeleteBucket(ctx context.Context, bucket string) error {
+	if bucket == "" {
+		return s3err.GetAPIError(s3err.ErrInvalidBucketName)
+	}
+
+	err := b.engine.DeleteBucket(ctx, bucket)
+	if err != nil {
+		if errors.Is(err, storage.ErrBucketNotFound) {
+			return s3err.GetBucketErr(s3err.ErrNoSuchBucket, bucket)
+		}
+		if errors.Is(err, storage.ErrBucketNotEmpty) {
+			return s3err.GetBucketErr(s3err.ErrBucketNotEmpty, bucket)
+		}
+		if s, ok := status.FromError(err); ok {
+			switch s.Code() {
+			case codes.NotFound:
+				return s3err.GetBucketErr(s3err.ErrNoSuchBucket, bucket)
+			case codes.FailedPrecondition:
+				return s3err.GetBucketErr(s3err.ErrBucketNotEmpty, bucket)
+			}
+		}
+		return err
+	}
+
+	return nil
+}
+
+

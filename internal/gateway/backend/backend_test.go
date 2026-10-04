@@ -98,7 +98,7 @@ func startTestMetadataNode(t *testing.T, nodeID string) (string, castorv1.Metada
 		RaftBootstrap: true,
 	}
 
-	raftNode, err := consensus.NewRaftNode(raftCfg, fsm)
+	raftNode, err := consensus.NewRaftNode(raftCfg, nil, fsm)
 	if err != nil {
 		_ = badgerStore.Close()
 		t.Fatalf("failed to initialize test Raft node: %v", err)
@@ -593,5 +593,73 @@ func TestCastorBackend_ListBuckets(t *testing.T) {
 	}
 }
 
+func TestCastorBackend_DeleteBucket(t *testing.T) {
+	nodeAddr, cleanupNode := startTestDataNode(t, "data-del-b")
+	defer cleanupNode()
 
+	metaAddr, metaClient, metaCleanup := startTestMetadataNode(t, "meta-del-b")
+	defer metaCleanup()
 
+	cfg := config.Config{
+		ChunkSize:            4096,
+		WriteQuorum:          1,
+		MaxConcurrentUploads: 2,
+		DataNodes:            []string{nodeAddr},
+		MetadataAddr:         metaAddr,
+	}
+
+	engine := storage.New(cfg, metaClient)
+	defer engine.Close()
+
+	be := New(engine, metaClient)
+	ctx := context.Background()
+
+	// 1. Empty bucket name returns ErrInvalidBucketName
+	if err := be.DeleteBucket(ctx, ""); !errors.Is(err, s3err.GetAPIError(s3err.ErrInvalidBucketName)) {
+		t.Fatalf("expected ErrInvalidBucketName on empty bucket, got %v", err)
+	}
+
+	// 2. Non-existent bucket returns ErrNoSuchBucket
+	if err := be.DeleteBucket(ctx, "nonexistent"); !errors.Is(err, s3err.GetBucketErr(s3err.ErrNoSuchBucket, "nonexistent")) {
+		t.Fatalf("expected ErrNoSuchBucket, got %v", err)
+	}
+
+	// 3. Create bucket and upload object
+	bucketName := "active-bucket"
+	if err := be.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: &bucketName}, nil); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	objKey := "test.txt"
+	objData := []byte("hello world")
+	objLen := int64(len(objData))
+	_, err := be.PutObject(ctx, s3response.PutObjectInput{
+		Bucket:        &bucketName,
+		Key:           &objKey,
+		Body:          bytes.NewReader(objData),
+		ContentLength: &objLen,
+	})
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	// Deleting non-empty bucket returns ErrBucketNotEmpty
+	if err := be.DeleteBucket(ctx, bucketName); !errors.Is(err, s3err.GetBucketErr(s3err.ErrBucketNotEmpty, bucketName)) {
+		t.Fatalf("expected ErrBucketNotEmpty on non-empty bucket, got %v", err)
+	}
+
+	// 4. Create empty bucket and successfully delete it
+	emptyBucket := "empty-bucket-to-delete"
+	if err := be.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: &emptyBucket}, nil); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	if err := be.DeleteBucket(ctx, emptyBucket); err != nil {
+		t.Fatalf("DeleteBucket failed on empty bucket: %v", err)
+	}
+
+	// HeadBucket confirms it no longer exists
+	if _, err := be.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: &emptyBucket}); !errors.Is(err, s3err.GetBucketErr(s3err.ErrNoSuchBucket, emptyBucket)) {
+		t.Fatalf("expected HeadBucket ErrNoSuchBucket after deletion, got %v", err)
+	}
+}

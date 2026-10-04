@@ -74,7 +74,7 @@ func startTestMetadataNode(t *testing.T, nodeID string) (string, castorv1.Metada
 		RaftBootstrap: true,
 	}
 
-	raftNode, err := consensus.NewRaftNode(raftCfg, fsm)
+	raftNode, err := consensus.NewRaftNode(raftCfg, nil, fsm)
 	if err != nil {
 		_ = badgerStore.Close()
 		t.Fatalf("failed to initialize test Raft node: %v", err)
@@ -467,5 +467,72 @@ func TestStorageEngine_ListBuckets(t *testing.T) {
 	}
 }
 
+func TestStorageEngine_DeleteBucket(t *testing.T) {
+	metaAddr, metaClient, metaCleanup := startTestMetadataNode(t, "meta-del-b")
+	defer metaCleanup()
 
+	cfg := config.Config{
+		ChunkSize:            4096,
+		WriteQuorum:          2,
+		MaxConcurrentUploads: 4,
+		DataNodes:            []string{"127.0.0.1:9101"},
+		MetadataAddr:         metaAddr,
+	}
 
+	engine := New(cfg, metaClient)
+	defer engine.Close()
+
+	ctx := context.Background()
+
+	// 1. Validation error on empty bucket name
+	if err := engine.DeleteBucket(ctx, ""); err == nil {
+		t.Fatal("expected error on empty bucket name, got nil")
+	}
+
+	// 2. Non-existent bucket returns ErrBucketNotFound
+	if err := engine.DeleteBucket(ctx, "nonexistent-bucket"); !errors.Is(err, ErrBucketNotFound) {
+		t.Fatalf("expected ErrBucketNotFound, got %v", err)
+	}
+
+	// 3. Create bucket and commit a manifest to simulate non-empty bucket
+	bucketName := "del-test-bucket"
+	if err := engine.CreateBucket(ctx, bucketName, "admin", nil); err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	_, err := metaClient.CommitManifest(ctx, &castorv1.CommitManifestRequest{
+		Bucket:   bucketName,
+		Key:      "sample.txt",
+		Size:     10,
+		Etag:     "testetag",
+		ChunkIds: []string{"chunk1"},
+		OwnerId:  "admin",
+	})
+	if err != nil {
+		t.Fatalf("failed to commit manifest: %v", err)
+	}
+
+	// Deleting non-empty bucket returns ErrBucketNotEmpty
+	if err := engine.DeleteBucket(ctx, bucketName); !errors.Is(err, ErrBucketNotEmpty) {
+		t.Fatalf("expected ErrBucketNotEmpty on non-empty bucket, got %v", err)
+	}
+
+	// 4. Create empty bucket and successfully delete it
+	emptyBucket := "empty-del-bucket"
+	if err := engine.CreateBucket(ctx, emptyBucket, "admin", nil); err != nil {
+		t.Fatalf("failed to create empty bucket: %v", err)
+	}
+
+	if err := engine.DeleteBucket(ctx, emptyBucket); err != nil {
+		t.Fatalf("failed to delete empty bucket: %v", err)
+	}
+
+	// Verify bucket no longer exists
+	existsResp, err := metaClient.CheckBucketExists(ctx, &castorv1.CheckBucketExistsRequest{Bucket: emptyBucket})
+	if err != nil {
+		t.Fatalf("CheckBucketExists failed: %v", err)
+	}
+	if existsResp.GetExists() {
+		t.Fatal("expected bucket to no longer exist after deletion")
+	}
+}

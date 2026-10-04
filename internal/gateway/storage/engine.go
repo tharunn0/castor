@@ -20,6 +20,7 @@ var (
 	ErrNotImplemented      = errors.New("not implemented yet")
 	ErrBucketNotFound      = errors.New("bucket not found")
 	ErrBucketAlreadyExists = errors.New("bucket already exists")
+	ErrBucketNotEmpty      = errors.New("bucket not empty")
 	ErrObjectNotFound      = errors.New("object not found")
 )
 
@@ -388,4 +389,28 @@ func (e *StorageEngine) ListBuckets(ctx context.Context) ([]BucketInfo, error) {
 
 	return buckets, nil
 }
+
+func (e *StorageEngine) DeleteBucket(ctx context.Context, bucket string) error {
+	if bucket == "" {
+		return errors.New("bucket name is required")
+	}
+
+	_, err := e.metaClient.DeleteBucket(ctx, &castorv1.DeleteBucketMetadataRequest{
+		Bucket: bucket,
+	})
+	if err != nil {
+		if s, ok := status.FromError(err); ok {
+			switch s.Code() {
+			case codes.NotFound:
+				return ErrBucketNotFound
+			case codes.FailedPrecondition:
+				return ErrBucketNotEmpty
+			}
+		}
+		return err
+	}
+
+	return nil
+}
+
 

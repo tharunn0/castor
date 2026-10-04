@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -168,5 +169,51 @@ func TestIntegration_GatewayCreateBucket(t *testing.T) {
 	if !foundBucket {
 		t.Fatalf("expected bucket %s in ListBuckets output, got: %v", bucketName, listOut.Buckets)
 	}
+
+	// 5. Attempt DeleteBucket on non-empty bucket fails with BucketNotEmpty
+	_, err = s3Client.PutObject(context.Background(), &s3.PutObjectInput{
+		Bucket:        aws.String(bucketName),
+		Key:           aws.String("sample.txt"),
+		Body:          bytes.NewReader([]byte("test-data")),
+		ContentLength: aws.Int64(9),
+	})
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	_, err = s3Client.DeleteBucket(context.Background(), &s3.DeleteBucketInput{
+		Bucket: aws.String(bucketName),
+	})
+	if err == nil {
+		t.Fatal("expected DeleteBucket on non-empty bucket to fail, but it succeeded")
+	}
+	if !strings.Contains(err.Error(), "BucketNotEmpty") && !strings.Contains(err.Error(), "409") {
+		t.Fatalf("expected BucketNotEmpty or 409 Conflict, got: %v", err)
+	}
+
+	// 6. DeleteBucket on empty bucket succeeds
+	emptyBucketName := "empty-test-bucket"
+	_, err = s3Client.CreateBucket(context.Background(), &s3.CreateBucketInput{
+		Bucket: aws.String(emptyBucketName),
+	})
+	if err != nil {
+		t.Fatalf("CreateBucket for empty bucket failed: %v", err)
+	}
+
+	_, err = s3Client.DeleteBucket(context.Background(), &s3.DeleteBucketInput{
+		Bucket: aws.String(emptyBucketName),
+	})
+	if err != nil {
+		t.Fatalf("DeleteBucket on empty bucket failed: %v", err)
+	}
+
+	// 7. HeadBucket confirms bucket is gone
+	_, err = s3Client.HeadBucket(context.Background(), &s3.HeadBucketInput{
+		Bucket: aws.String(emptyBucketName),
+	})
+	if err == nil {
+		t.Fatal("expected HeadBucket on deleted bucket to fail, but it succeeded")
+	}
 }
+
 
