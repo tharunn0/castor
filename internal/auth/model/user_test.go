@@ -309,3 +309,53 @@ func TestRegisterRequest_Validate(t *testing.T) {
 	}
 }
 
+func TestLoginRequest_Validate(t *testing.T) {
+	tests := []struct {
+		name    string
+		req     LoginRequest
+		wantErr error
+	}{
+		{
+			name: "valid request",
+			req: LoginRequest{
+				Username: "alice_123",
+				Password: "password123",
+			},
+			wantErr: nil,
+		},
+		{
+			name: "invalid username",
+			req: LoginRequest{
+				Username: "al",
+				Password: "password123",
+			},
+			wantErr: ErrInvalidUsername,
+		},
+		{
+			name: "password too short",
+			req: LoginRequest{
+				Username: "alice_123",
+				Password: "123",
+			},
+			wantErr: ErrInvalidPassword,
+		},
+		{
+			name: "password too long",
+			req: LoginRequest{
+				Username: "alice_123",
+				Password: strings.Repeat("p", 129),
+			},
+			wantErr: ErrInvalidPassword,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.req.Validate()
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("expected error %v, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+

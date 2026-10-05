@@ -14,7 +14,8 @@ import (
 )
 
 type mockUserRepo struct {
-	createUserFunc func(ctx context.Context, input model.CreateUserInput) (*model.User, error)
+	createUserFunc        func(ctx context.Context, input model.CreateUserInput) (*model.User, error)
+	getUserByUsernameFunc func(ctx context.Context, username string) (*model.User, error)
 }
 
 func (m *mockUserRepo) CreateUser(ctx context.Context, input model.CreateUserInput) (*model.User, error) {
@@ -29,6 +30,9 @@ func (m *mockUserRepo) GetUserByID(ctx context.Context, id uuid.UUID) (*model.Us
 }
 
 func (m *mockUserRepo) GetUserByUsername(ctx context.Context, username string) (*model.User, error) {
+	if m.getUserByUsernameFunc != nil {
+		return m.getUserByUsernameFunc(ctx, username)
+	}
 	return nil, repository.ErrNotImplemented
 }
 
@@ -144,4 +148,99 @@ func TestService_Register_RepoError(t *testing.T) {
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected error %v, got %v", expectedErr, err)
 	}
+}
+
+func TestService_Login(t *testing.T) {
+	hashedPassword, _ := bcrypt.GenerateFromPassword([]byte("correctpassword"), 10)
+	userID := uuid.New()
+	mockUser := &model.User{
+		ID:           userID,
+		Username:     "validuser",
+		Email:        "valid@example.com",
+		PasswordHash: string(hashedPassword),
+		Role:         model.RoleUser,
+		CreatedAt:    time.Now().UTC(),
+	}
+
+	cfg := config.Config{
+		JWTSecret: "test-jwt-secret-key-32-chars-long!",
+		JWTExpiry: 1 * time.Hour,
+	}
+
+	t.Run("successful login", func(t *testing.T) {
+		repo := &mockUserRepo{
+			getUserByUsernameFunc: func(ctx context.Context, username string) (*model.User, error) {
+				if username == "validuser" {
+					return mockUser, nil
+				}
+				return nil, repository.ErrUserNotFound
+			},
+		}
+
+		svc := NewService(cfg, repo)
+		resp, err := svc.Login(context.Background(), model.LoginRequest{
+			Username: "validuser",
+			Password: "correctpassword",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error on login: %v", err)
+		}
+		if resp.Token == "" {
+			t.Error("expected non-empty JWT token")
+		}
+		if resp.Username != "validuser" {
+			t.Errorf("expected username validuser, got %s", resp.Username)
+		}
+		if resp.ID != userID {
+			t.Errorf("expected ID %v, got %v", userID, resp.ID)
+		}
+		if resp.Role != model.RoleUser {
+			t.Errorf("expected role USER, got %s", resp.Role)
+		}
+	})
+
+	t.Run("incorrect password", func(t *testing.T) {
+		repo := &mockUserRepo{
+			getUserByUsernameFunc: func(ctx context.Context, username string) (*model.User, error) {
+				return mockUser, nil
+			},
+		}
+
+		svc := NewService(cfg, repo)
+		_, err := svc.Login(context.Background(), model.LoginRequest{
+			Username: "validuser",
+			Password: "wrongpassword",
+		})
+		if !errors.Is(err, model.ErrInvalidCredentials) {
+			t.Fatalf("expected ErrInvalidCredentials, got %v", err)
+		}
+	})
+
+	t.Run("user not found", func(t *testing.T) {
+		repo := &mockUserRepo{
+			getUserByUsernameFunc: func(ctx context.Context, username string) (*model.User, error) {
+				return nil, repository.ErrUserNotFound
+			},
+		}
+
+		svc := NewService(cfg, repo)
+		_, err := svc.Login(context.Background(), model.LoginRequest{
+			Username: "nonexistent",
+			Password: "password123",
+		})
+		if !errors.Is(err, model.ErrInvalidCredentials) {
+			t.Fatalf("expected ErrInvalidCredentials, got %v", err)
+		}
+	})
+
+	t.Run("validation error", func(t *testing.T) {
+		svc := NewService(cfg, &mockUserRepo{})
+		_, err := svc.Login(context.Background(), model.LoginRequest{
+			Username: "al",
+			Password: "123",
+		})
+		if err == nil {
+			t.Fatal("expected validation error, got nil")
+		}
+	})
 }

@@ -25,8 +25,7 @@ func NewHealthHandler(cfg config.Config, pinger Pinger) *HealthHandler {
 }
 
 func (h *HealthHandler) RegisterRoutes(app *fiber.App) {
-	app.Get("/health", h.Check)
-	app.Get("/healthz", h.Check)
+	app.Get("/api/v1/health", h.Check)
 }
 
 func (h *HealthHandler) Check(c fiber.Ctx) error {

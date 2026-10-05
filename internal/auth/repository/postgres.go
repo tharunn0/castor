@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/tharunn0/castor/internal/auth/model"
@@ -71,11 +72,63 @@ func (r *PostgresRepository) GetUserByID(ctx context.Context, id uuid.UUID) (*mo
 }
 
 func (r *PostgresRepository) GetUserByUsername(ctx context.Context, username string) (*model.User, error) {
-	return nil, ErrNotImplemented
+	if r.pool == nil {
+		return nil, ErrNotImplemented
+	}
+
+	query := `
+		SELECT id, username, email, password_hash, role, created_at
+		FROM users
+		WHERE username = $1
+	`
+	var user model.User
+	var roleStr string
+	err := r.pool.QueryRow(ctx, query, username).Scan(
+		&user.ID,
+		&user.Username,
+		&user.Email,
+		&user.PasswordHash,
+		&roleStr,
+		&user.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrUserNotFound
+		}
+		return nil, fmt.Errorf("get user by username: %w", err)
+	}
+	user.Role = model.Role(roleStr)
+	return &user, nil
 }
 
 func (r *PostgresRepository) GetUserByEmail(ctx context.Context, email string) (*model.User, error) {
-	return nil, ErrNotImplemented
+	if r.pool == nil {
+		return nil, ErrNotImplemented
+	}
+
+	query := `
+		SELECT id, username, email, password_hash, role, created_at
+		FROM users
+		WHERE email = $1
+	`
+	var user model.User
+	var roleStr string
+	err := r.pool.QueryRow(ctx, query, email).Scan(
+		&user.ID,
+		&user.Username,
+		&user.Email,
+		&user.PasswordHash,
+		&roleStr,
+		&user.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrUserNotFound
+		}
+		return nil, fmt.Errorf("get user by email: %w", err)
+	}
+	user.Role = model.Role(roleStr)
+	return &user, nil
 }
 
 func (r *PostgresRepository) CreateCredential(ctx context.Context, input model.CreateCredentialInput) (*model.S3Credential, error) {

@@ -114,6 +114,30 @@ type RegisterResponse struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type LoginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+func (r *LoginRequest) Validate() error {
+	if err := validateUsername(r.Username); err != nil {
+		return err
+	}
+	if len(r.Password) < 6 || len(r.Password) > 128 {
+		return ErrInvalidPassword
+	}
+	return nil
+}
+
+type LoginResponse struct {
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
+	ID        uuid.UUID `json:"id"`
+	Username  string    `json:"username"`
+	Email     string    `json:"email"`
+	Role      Role      `json:"role"`
+}
+
 func validateUsername(username string) error {
 	if !validUsernameRegex.MatchString(username) {
 		return ErrInvalidUsername

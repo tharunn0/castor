@@ -6,13 +6,14 @@ import (
 )
 
 func RegisterRoutes(app *fiber.App, authHandler *handler.AuthHandler, healthHandler *handler.HealthHandler) {
+	v1 := app.Group("/api/v1")
+
 	if healthHandler != nil {
-		app.Get("/health", healthHandler.Check)
-		app.Get("/healthz", healthHandler.Check)
+		v1.Get("/health", healthHandler.Check)
 	}
 
 	if authHandler != nil {
-		app.Post("/register", authHandler.Register)
-		app.Post("/api/auth/register", authHandler.Register)
+		v1.Post("/register", authHandler.Register)
+		v1.Post("/login", authHandler.Login)
 	}
 }

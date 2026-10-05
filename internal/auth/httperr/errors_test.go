@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/tharunn0/castor/internal/auth/jwt"
 	"github.com/tharunn0/castor/internal/auth/model"
 	"github.com/tharunn0/castor/internal/auth/repository"
 )
@@ -55,6 +56,24 @@ func TestTranslate(t *testing.T) {
 			err:            repository.ErrUserNotFound,
 			expectedStatus: fiber.StatusNotFound,
 			expectedMsg:    repository.ErrUserNotFound.Error(),
+		},
+		{
+			name:           "jwt invalid token error",
+			err:            jwt.ErrInvalidToken,
+			expectedStatus: fiber.StatusUnauthorized,
+			expectedMsg:    jwt.ErrInvalidToken.Error(),
+		},
+		{
+			name:           "jwt expired token error",
+			err:            jwt.ErrExpiredToken,
+			expectedStatus: fiber.StatusUnauthorized,
+			expectedMsg:    jwt.ErrExpiredToken.Error(),
+		},
+		{
+			name:           "invalid credentials error",
+			err:            model.ErrInvalidCredentials,
+			expectedStatus: fiber.StatusUnauthorized,
+			expectedMsg:    model.ErrInvalidCredentials.Error(),
 		},
 		{
 			name:           "unmapped internal server error",

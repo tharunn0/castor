@@ -14,4 +14,5 @@ var (
 	ErrInvalidSecretAccessKey  = errors.New("invalid secret access key: must be 1-64 characters")
 	ErrInvalidLabel            = errors.New("invalid label: cannot exceed 64 characters")
 	ErrInvalidCredentialStatus = errors.New("invalid credential status: must be ACTIVE or REVOKED")
+	ErrInvalidCredentials      = errors.New("invalid username or password")
 )

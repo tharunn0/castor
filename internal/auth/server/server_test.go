@@ -27,11 +27,19 @@ func (m *mockPinger) Ping(ctx context.Context) error {
 
 type mockAuthService struct {
 	registerFunc func(ctx context.Context, req model.RegisterRequest) (*model.RegisterResponse, error)
+	loginFunc    func(ctx context.Context, req model.LoginRequest) (*model.LoginResponse, error)
 }
 
 func (m *mockAuthService) Register(ctx context.Context, req model.RegisterRequest) (*model.RegisterResponse, error) {
 	if m.registerFunc != nil {
 		return m.registerFunc(ctx, req)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockAuthService) Login(ctx context.Context, req model.LoginRequest) (*model.LoginResponse, error) {
+	if m.loginFunc != nil {
+		return m.loginFunc(ctx, req)
 	}
 	return nil, errors.New("not implemented")
 }
@@ -45,7 +53,7 @@ func TestServer_HealthRoutes(t *testing.T) {
 	healthH := handler.NewHealthHandler(cfg, pinger)
 	srv := New(cfg, nil, healthH)
 
-	endpoints := []string{"/health", "/healthz"}
+	endpoints := []string{"/api/v1/health"}
 	for _, endpoint := range endpoints {
 		req := httptest.NewRequest(http.MethodGet, endpoint, nil)
 		resp, err := srv.App().Test(req)
@@ -96,7 +104,7 @@ func TestServer_AuthRoutes(t *testing.T) {
 	authH := handler.NewAuthHandler(svc)
 	srv := New(cfg, authH, nil)
 
-	endpoints := []string{"/register", "/api/auth/register"}
+	endpoints := []string{"/api/v1/register"}
 	for _, endpoint := range endpoints {
 		bodyBytes, _ := json.Marshal(model.RegisterRequest{
 			Username: "testuser",
@@ -112,6 +120,45 @@ func TestServer_AuthRoutes(t *testing.T) {
 		}
 		if resp.StatusCode != http.StatusCreated {
 			t.Fatalf("expected status 201 for %s, got %d", endpoint, resp.StatusCode)
+		}
+	}
+}
+
+func TestServer_LoginRoutes(t *testing.T) {
+	cfg := config.Config{
+		HTTPAddr: ":9095",
+	}
+
+	svc := &mockAuthService{
+		loginFunc: func(ctx context.Context, req model.LoginRequest) (*model.LoginResponse, error) {
+			return &model.LoginResponse{
+				Token:     "mock-jwt-token",
+				ExpiresAt: time.Now().UTC().Add(1 * time.Hour),
+				ID:        uuid.New(),
+				Username:  req.Username,
+				Email:     "test@example.com",
+				Role:      model.RoleUser,
+			}, nil
+		},
+	}
+	authH := handler.NewAuthHandler(svc)
+	srv := New(cfg, authH, nil)
+
+	endpoints := []string{"/api/v1/login"}
+	for _, endpoint := range endpoints {
+		bodyBytes, _ := json.Marshal(model.LoginRequest{
+			Username: "testuser",
+			Password: "password123",
+		})
+		req := httptest.NewRequest(http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := srv.App().Test(req)
+		if err != nil {
+			t.Fatalf("request to %s failed: %v", endpoint, err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected status 200 for %s, got %d", endpoint, resp.StatusCode)
 		}
 	}
 }
@@ -134,7 +181,7 @@ func TestServer_ErrorHandler(t *testing.T) {
 		Email:    "invalid",
 		Password: "123",
 	})
-	req := httptest.NewRequest(http.MethodPost, "/register", bytes.NewReader(bodyBytes))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/register", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := srv.App().Test(req)

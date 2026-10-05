@@ -62,7 +62,7 @@ func TestHealthHandler(t *testing.T) {
 			h := NewHealthHandler(cfg, tc.pinger)
 			h.RegisterRoutes(app)
 
-			endpoints := []string{"/health", "/healthz"}
+			endpoints := []string{"/api/v1/health"}
 			for _, endpoint := range endpoints {
 				req := httptest.NewRequest(http.MethodGet, endpoint, nil)
 				resp, err := app.Test(req)

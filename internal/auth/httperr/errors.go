@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/tharunn0/castor/internal/auth/jwt"
 	"github.com/tharunn0/castor/internal/auth/model"
 	"github.com/tharunn0/castor/internal/auth/repository"
 )
@@ -30,6 +31,12 @@ var errorRegistry = []errorMapping{
 	{target: repository.ErrUserNotFound, status: fiber.StatusNotFound},
 	{target: repository.ErrCredentialNotFound, status: fiber.StatusNotFound},
 	{target: repository.ErrNotImplemented, status: fiber.StatusNotImplemented},
+	{target: jwt.ErrInvalidToken, status: fiber.StatusUnauthorized},
+	{target: jwt.ErrExpiredToken, status: fiber.StatusUnauthorized},
+	{target: jwt.ErrMissingToken, status: fiber.StatusUnauthorized},
+	{target: jwt.ErrInvalidSigningMethod, status: fiber.StatusUnauthorized},
+	{target: jwt.ErrEmptySecret, status: fiber.StatusInternalServerError},
+	{target: model.ErrInvalidCredentials, status: fiber.StatusUnauthorized},
 }
 
 // Translate converts an application domain error into an HTTP status code and client-safe message.
