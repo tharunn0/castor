@@ -1,4 +1,4 @@
-package health
+package handler
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/gofiber/fiber/v3"
 	"github.com/tharunn0/castor/internal/auth/config"
 )
 
@@ -20,7 +21,7 @@ func (m *mockPinger) Ping(ctx context.Context) error {
 	return m.err
 }
 
-func TestHealthEndpoints(t *testing.T) {
+func TestHealthHandler(t *testing.T) {
 	cfg := config.Config{
 		HTTPAddr: ":9095",
 	}
@@ -57,9 +58,11 @@ func TestHealthEndpoints(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			app := NewApp(cfg, tc.pinger)
-			endpoints := []string{"/health", "/healthz"}
+			app := fiber.New()
+			h := NewHealthHandler(cfg, tc.pinger)
+			h.RegisterRoutes(app)
 
+			endpoints := []string{"/health", "/healthz"}
 			for _, endpoint := range endpoints {
 				req := httptest.NewRequest(http.MethodGet, endpoint, nil)
 				resp, err := app.Test(req)
@@ -98,7 +101,7 @@ func TestHealthEndpoints(t *testing.T) {
 					t.Errorf("expected engine postgres-17, got %s", payload.Database.Engine)
 				}
 				if payload.Database.Status != tc.expectedDB {
-					t.Errorf("expected db status %s, got %s", tc.expectedDB, payload.Database.Status)
+					t.Errorf("expected database status %s, got %s", tc.expectedDB, payload.Database.Status)
 				}
 			}
 		})

@@ -9,12 +9,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gofiber/fiber/v3"
 	"github.com/tharunn0/castor/internal/auth/config"
 	"github.com/tharunn0/castor/internal/auth/database"
 	"github.com/tharunn0/castor/internal/auth/handler"
-	"github.com/tharunn0/castor/internal/auth/health"
 	"github.com/tharunn0/castor/internal/auth/repository"
+	"github.com/tharunn0/castor/internal/auth/server"
 	"github.com/tharunn0/castor/internal/auth/service"
 	"github.com/tharunn0/castor/internal/telemetry"
 )
@@ -43,15 +42,13 @@ func main() {
 	repo := repository.NewPostgresRepository(pool)
 	svc := service.NewService(cfg, repo)
 	authHandler := handler.NewAuthHandler(svc)
+	healthHandler := handler.NewHealthHandler(cfg, repo)
 
-	app := health.NewApp(cfg, repo)
-	authHandler.RegisterRoutes(app)
+	srv := server.New(cfg, authHandler, healthHandler)
 
 	go func() {
 		logger.Info("auth HTTP server listening", "addr", cfg.HTTPAddr)
-		if err := app.Listen(cfg.HTTPAddr, fiber.ListenConfig{
-			DisableStartupMessage: true,
-		}); err != nil && !errors.Is(err, net.ErrClosed) {
+		if err := srv.Listen(); err != nil && !errors.Is(err, net.ErrClosed) {
 			logger.Error("auth HTTP server error", "error", err)
 		}
 	}()
@@ -62,6 +59,6 @@ func main() {
 	sig := <-shutdownChan
 	logger.Info("shutting down auth service", "signal", sig.String())
 
-	_ = app.Shutdown()
+	_ = srv.Shutdown()
 	logger.Info("auth service stopped cleanly")
 }

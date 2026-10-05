@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1.4
+FROM golang:alpine AS builder
+
+WORKDIR /src
+
+RUN apk add --no-cache ca-certificates tzdata
+
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+COPY . .
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build \
+    -trimpath \
+    -ldflags="-s -w" \
+    -o /bin/auth-svc ./cmd/auth-svc
+
+FROM gcr.io/distroless/static-debian12:nonroot
+
+WORKDIR /
+
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+COPY --from=builder /bin/auth-svc /bin/auth-svc
+
+USER nonroot:nonroot
+
+EXPOSE 9095
+
+ENTRYPOINT ["/bin/auth-svc"]
