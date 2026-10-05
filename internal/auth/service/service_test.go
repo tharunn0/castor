@@ -44,32 +44,66 @@ func TestService_Register_AdminKeyScenarios(t *testing.T) {
 	configuredAdminKey := "super-secret-admin-key"
 
 	tests := []struct {
-		name         string
-		cfgAdminKey  string
-		reqAdminKey  string
-		expectedRole model.Role
+		name              string
+		cfgAdminKey       string
+		cfgAdminSecretKey string
+		reqRole           model.Role
+		reqAdminKey       string
+		expectedRole      model.Role
 	}{
 		{
-			name:         "valid admin key grants admin role",
+			name:         "valid admin key with admin role requested grants admin role",
 			cfgAdminKey:  configuredAdminKey,
+			reqRole:      model.RoleAdmin,
 			reqAdminKey:  configuredAdminKey,
 			expectedRole: model.RoleAdmin,
 		},
 		{
-			name:         "incorrect admin key grants user role",
+			name:              "valid admin_secret_key with admin role requested grants admin role",
+			cfgAdminSecretKey: configuredAdminKey,
+			reqRole:           model.RoleAdmin,
+			reqAdminKey:       configuredAdminKey,
+			expectedRole:      model.RoleAdmin,
+		},
+		{
+			name:         "incorrect admin key with admin role requested grants user role",
 			cfgAdminKey:  configuredAdminKey,
+			reqRole:      model.RoleAdmin,
 			reqAdminKey:  "wrong-key",
 			expectedRole: model.RoleUser,
 		},
 		{
-			name:         "empty request admin key grants user role",
+			name:              "incorrect admin key with admin_secret_key and admin role requested grants user role",
+			cfgAdminSecretKey: configuredAdminKey,
+			reqRole:           model.RoleAdmin,
+			reqAdminKey:       "wrong-key",
+			expectedRole:      model.RoleUser,
+		},
+		{
+			name:         "empty request admin key with admin role requested grants user role",
 			cfgAdminKey:  configuredAdminKey,
+			reqRole:      model.RoleAdmin,
 			reqAdminKey:  "",
 			expectedRole: model.RoleUser,
 		},
 		{
-			name:         "unconfigured server admin key grants user role even if key provided",
+			name:         "valid admin key but user role requested keeps user role without checking key",
+			cfgAdminKey:  configuredAdminKey,
+			reqRole:      model.RoleUser,
+			reqAdminKey:  configuredAdminKey,
+			expectedRole: model.RoleUser,
+		},
+		{
+			name:         "valid admin key but empty role requested defaults to user role",
+			cfgAdminKey:  configuredAdminKey,
+			reqRole:      "",
+			reqAdminKey:  configuredAdminKey,
+			expectedRole: model.RoleUser,
+		},
+		{
+			name:         "unconfigured server admin key with admin role requested grants user role",
 			cfgAdminKey:  "",
+			reqRole:      model.RoleAdmin,
 			reqAdminKey:  "some-key",
 			expectedRole: model.RoleUser,
 		},
@@ -77,7 +111,10 @@ func TestService_Register_AdminKeyScenarios(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := config.Config{AdminKey: tc.cfgAdminKey}
+			cfg := config.Config{
+				AdminKey:       tc.cfgAdminKey,
+				AdminSecretKey: tc.cfgAdminSecretKey,
+			}
 
 			var capturedInput model.CreateUserInput
 			repo := &mockUserRepo{
@@ -98,6 +135,7 @@ func TestService_Register_AdminKeyScenarios(t *testing.T) {
 				Username: "testuser",
 				Email:    "test@example.com",
 				Password: "password123",
+				Role:     tc.reqRole,
 				AdminKey: tc.reqAdminKey,
 			})
 			if err != nil {

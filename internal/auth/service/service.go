@@ -35,8 +35,13 @@ func (s *Service) Register(ctx context.Context, req model.RegisterRequest) (*mod
 		return nil, err
 	}
 
+	adminSecret := s.cfg.AdminSecretKey
+	if adminSecret == "" {
+		adminSecret = s.cfg.AdminKey
+	}
+
 	role := model.RoleUser
-	if req.AdminKey != "" && s.cfg.AdminKey != "" && req.AdminKey == s.cfg.AdminKey {
+	if req.Role == model.RoleAdmin && adminSecret != "" && req.AdminKey == adminSecret {
 		role = model.RoleAdmin
 	}
 

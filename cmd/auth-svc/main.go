@@ -20,7 +20,11 @@ import (
 
 func main() {
 	logger := telemetry.NewLogger()
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		logger.Error("failed to load configuration", "error", err)
+		os.Exit(1)
+	}
 
 	logger.Info("starting auth service",
 		"http_addr", cfg.HTTPAddr,
