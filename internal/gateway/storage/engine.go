@@ -8,11 +8,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
 	"github.com/tharunn0/castor/internal/gateway/config"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
 
@@ -39,25 +45,266 @@ type BucketInfo struct {
 	CreatedAt time.Time
 }
 
-// StorageEngine manages bufferpool, placement manager and maintains connection with metadata service
 type StorageEngine struct {
 	cfg        config.Config
 	metaClient castorv1.MetadataServiceClient
 	placement  *PlacementManager
 	pool       *BufferPool
+
+	metaMu       sync.RWMutex
+	metaNodes    []string
+	metaClients  map[string]castorv1.MetadataServiceClient
+	metaConns    map[string]*grpc.ClientConn
+	activeLeader string
 }
 
 func New(cfg config.Config, metaClient castorv1.MetadataServiceClient) *StorageEngine {
 	pool := NewBufferPool(cfg.ChunkSize, cfg.MaxConcurrentUploads)
 	placement := NewPlacementManager(cfg.DataNodes, cfg.WriteQuorum)
 
+	metaClients := make(map[string]castorv1.MetadataServiceClient)
+	metaConns := make(map[string]*grpc.ClientConn)
+
+	var metaNodes []string
+	if len(cfg.MetadataNodes) > 0 {
+		metaNodes = append(metaNodes, cfg.MetadataNodes...)
+	} else if cfg.MetadataAddr != "" {
+		metaNodes = append(metaNodes, cfg.MetadataAddr)
+	}
+
+	activeLeader := ""
+	if len(metaNodes) > 0 {
+		activeLeader = metaNodes[0]
+		if metaClient != nil {
+			metaClients[activeLeader] = metaClient
+		}
+	}
+
 	return &StorageEngine{
-		cfg:        cfg,
-		metaClient: metaClient,
-		placement:  placement,
-		pool:       pool,
+		cfg:          cfg,
+		metaClient:   metaClient,
+		placement:    placement,
+		pool:         pool,
+		metaNodes:    metaNodes,
+		metaClients:  metaClients,
+		metaConns:    metaConns,
+		activeLeader: activeLeader,
 	}
 }
+
+func (e *StorageEngine) AddMetadataNode(addr string) {
+	e.metaMu.Lock()
+	defer e.metaMu.Unlock()
+	for _, node := range e.metaNodes {
+		if node == addr {
+			return
+		}
+	}
+	e.metaNodes = append(e.metaNodes, addr)
+}
+
+func (e *StorageEngine) AvailableMetadataNodes() []string {
+	e.metaMu.RLock()
+	defer e.metaMu.RUnlock()
+	nodes := make([]string, len(e.metaNodes))
+	copy(nodes, e.metaNodes)
+	return nodes
+}
+
+func (e *StorageEngine) getOrCreateClient(addr string) (castorv1.MetadataServiceClient, error) {
+	e.metaMu.Lock()
+	defer e.metaMu.Unlock()
+
+	if client, ok := e.metaClients[addr]; ok && client != nil {
+		return client, nil
+	}
+
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, fmt.Errorf("dial metadata node %s: %w", addr, err)
+	}
+
+	client := castorv1.NewMetadataServiceClient(conn)
+	e.metaConns[addr] = conn
+	e.metaClients[addr] = client
+	return client, nil
+}
+
+func isLeaderOrUnavailableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if s, ok := status.FromError(err); ok {
+		if s.Code() == codes.Unavailable {
+			return true
+		}
+		msg := s.Message()
+		return strings.Contains(msg, "not the raft leader") ||
+			strings.Contains(msg, "raft leader unavailable") ||
+			strings.Contains(msg, "raft not initialized")
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "not the raft leader") ||
+		strings.Contains(msg, "raft leader unavailable") ||
+		strings.Contains(msg, "raft not initialized")
+}
+
+func extractLeaderHint(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	const prefix = "leader is "
+	idx := strings.Index(msg, prefix)
+	if idx == -1 {
+		return ""
+	}
+	hint := strings.TrimSpace(msg[idx+len(prefix):])
+	if end := strings.IndexAny(hint, " \t\r\n,"); end != -1 {
+		hint = hint[:end]
+	}
+	return hint
+}
+
+func (e *StorageEngine) resolveLeaderHint(hint string, nodes []string) string {
+	if hint == "" {
+		return ""
+	}
+	for _, n := range nodes {
+		if n == hint {
+			return n
+		}
+	}
+
+	hintHost, hintPort, err := net.SplitHostPort(hint)
+	if err != nil {
+		hintHost = hint
+	}
+
+	for _, n := range nodes {
+		nodeHost, _, err := net.SplitHostPort(n)
+		if err == nil && nodeHost == hintHost {
+			return n
+		}
+		if n == hintHost {
+			return n
+		}
+	}
+
+	if hintPort != "" {
+		if raftPortNum, err := strconv.Atoi(hintPort); err == nil {
+			possibleGrpcPort := strconv.Itoa(raftPortNum - 1)
+			candidate := net.JoinHostPort(hintHost, possibleGrpcPort)
+			for _, n := range nodes {
+				if n == candidate {
+					return n
+				}
+			}
+		}
+	}
+
+	return hint
+}
+
+func (e *StorageEngine) executeWithLeader(ctx context.Context, op func(client castorv1.MetadataServiceClient) error) error {
+	e.metaMu.RLock()
+	currentLeader := e.activeLeader
+	nodes := make([]string, len(e.metaNodes))
+	copy(nodes, e.metaNodes)
+	e.metaMu.RUnlock()
+
+	var currentClient castorv1.MetadataServiceClient
+	if currentLeader != "" {
+		currentClient, _ = e.getOrCreateClient(currentLeader)
+	}
+	if currentClient == nil {
+		currentClient = e.metaClient
+	}
+
+	if currentClient != nil {
+		err := op(currentClient)
+		if err == nil || !isLeaderOrUnavailableError(err) {
+			return err
+		}
+
+		leaderHint := extractLeaderHint(err)
+		if leaderHint != "" {
+			resolved := e.resolveLeaderHint(leaderHint, nodes)
+			if resolved != "" {
+				e.AddMetadataNode(resolved)
+				if hintClient, hintErr := e.getOrCreateClient(resolved); hintErr == nil {
+					err = op(hintClient)
+					if err == nil || !isLeaderOrUnavailableError(err) {
+						e.metaMu.Lock()
+						e.activeLeader = resolved
+						e.metaMu.Unlock()
+						return err
+					}
+				}
+			}
+		}
+	}
+
+	var lastErr error
+	for _, node := range nodes {
+		if node == currentLeader {
+			continue
+		}
+		client, err := e.getOrCreateClient(node)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		err = op(client)
+		if err == nil || !isLeaderOrUnavailableError(err) {
+			e.metaMu.Lock()
+			e.activeLeader = node
+			e.metaMu.Unlock()
+			return err
+		}
+		lastErr = err
+	}
+
+	if lastErr != nil {
+		return lastErr
+	}
+	return errors.New("no metadata leader available")
+}
+
+func (e *StorageEngine) FindLeader(ctx context.Context) (castorv1.MetadataServiceClient, string, error) {
+	e.metaMu.RLock()
+	leader := e.activeLeader
+	e.metaMu.RUnlock()
+
+	if leader != "" {
+		client, err := e.getOrCreateClient(leader)
+		if err == nil && client != nil {
+			return client, leader, nil
+		}
+	}
+
+	nodes := e.AvailableMetadataNodes()
+	for _, node := range nodes {
+		client, err := e.getOrCreateClient(node)
+		if err != nil {
+			continue
+		}
+		_, err = client.CheckBucketExists(ctx, &castorv1.CheckBucketExistsRequest{Bucket: "__probe__"})
+		if err == nil || !isLeaderOrUnavailableError(err) {
+			e.metaMu.Lock()
+			e.activeLeader = node
+			e.metaMu.Unlock()
+			return client, node, nil
+		}
+	}
+
+	if e.metaClient != nil {
+		return e.metaClient, e.activeLeader, nil
+	}
+	return nil, "", errors.New("no metadata leader found")
+}
+
 
 func (e *StorageEngine) PutObject(ctx context.Context, bucket, key, ownerID string, reader io.Reader, size int64) (string, error) {
 	if bucket == "" {
@@ -67,7 +314,12 @@ func (e *StorageEngine) PutObject(ctx context.Context, bucket, key, ownerID stri
 		return "", errors.New("object key is required")
 	}
 
-	existsResp, err := e.metaClient.CheckBucketExists(ctx, &castorv1.CheckBucketExistsRequest{Bucket: bucket})
+	var existsResp *castorv1.CheckBucketExistsResponse
+	err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+		var err error
+		existsResp, err = client.CheckBucketExists(ctx, &castorv1.CheckBucketExistsRequest{Bucket: bucket})
+		return err
+	})
 	if err != nil {
 		if s, ok := status.FromError(err); ok && s.Code() == codes.NotFound {
 			return "", ErrBucketNotFound
@@ -128,14 +380,17 @@ func (e *StorageEngine) PutObject(ctx context.Context, bucket, key, ownerID stri
 
 	etag := hex.EncodeToString(objHasher.Sum(nil))
 
-	_, err = e.metaClient.CommitManifest(ctx, &castorv1.CommitManifestRequest{
-		Bucket:          bucket,
-		Key:             key,
-		Size:            totalSize,
-		Etag:            etag,
-		ChunkIds:        chunkIDs,
-		ChunkPlacements: placements,
-		OwnerId:         ownerID,
+	err = e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+		_, err := client.CommitManifest(ctx, &castorv1.CommitManifestRequest{
+			Bucket:          bucket,
+			Key:             key,
+			Size:            totalSize,
+			Etag:            etag,
+			ChunkIds:        chunkIDs,
+			ChunkPlacements: placements,
+			OwnerId:         ownerID,
+		})
+		return err
 	})
 	if err != nil {
 		if s, ok := status.FromError(err); ok && s.Code() == codes.NotFound {
@@ -159,7 +414,12 @@ func (e *StorageEngine) GetObjectRange(ctx context.Context, bucket, key string, 
 		return nil, nil, errors.New("object key is required")
 	}
 
-	existsResp, err := e.metaClient.CheckBucketExists(ctx, &castorv1.CheckBucketExistsRequest{Bucket: bucket})
+	var existsResp *castorv1.CheckBucketExistsResponse
+	err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+		var err error
+		existsResp, err = client.CheckBucketExists(ctx, &castorv1.CheckBucketExistsRequest{Bucket: bucket})
+		return err
+	})
 	if err != nil {
 		if s, ok := status.FromError(err); ok && s.Code() == codes.NotFound {
 			return nil, nil, ErrBucketNotFound
@@ -170,9 +430,14 @@ func (e *StorageEngine) GetObjectRange(ctx context.Context, bucket, key string, 
 		return nil, nil, ErrBucketNotFound
 	}
 
-	manifestResp, err := e.metaClient.GetManifest(ctx, &castorv1.GetManifestRequest{
-		Bucket: bucket,
-		Key:    key,
+	var manifestResp *castorv1.GetManifestResponse
+	err = e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+		var err error
+		manifestResp, err = client.GetManifest(ctx, &castorv1.GetManifestRequest{
+			Bucket: bucket,
+			Key:    key,
+		})
+		return err
 	})
 	if err != nil {
 		if s, ok := status.FromError(err); ok && s.Code() == codes.NotFound {
@@ -183,6 +448,7 @@ func (e *StorageEngine) GetObjectRange(ctx context.Context, bucket, key string, 
 	if manifestResp.GetStatus() == "deleted" {
 		return nil, nil, ErrObjectNotFound
 	}
+
 
 	objInfo := &ObjectInfo{
 		Bucket:      manifestResp.GetBucket(),
@@ -342,7 +608,21 @@ func (e *StorageEngine) DeleteObject(ctx context.Context, bucket, key string) er
 }
 
 func (e *StorageEngine) Close() error {
-	return e.placement.Close()
+	e.metaMu.Lock()
+	defer e.metaMu.Unlock()
+
+	var firstErr error
+	for _, conn := range e.metaConns {
+		if conn != nil {
+			if err := conn.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	if err := e.placement.Close(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
 }
 
 func (e *StorageEngine) CreateBucket(ctx context.Context, bucket, ownerID string, tags map[string]string) error {
@@ -353,10 +633,13 @@ func (e *StorageEngine) CreateBucket(ctx context.Context, bucket, ownerID string
 		ownerID = "admin"
 	}
 
-	_, err := e.metaClient.CreateBucket(ctx, &castorv1.CreateBucketMetadataRequest{
-		Bucket:  bucket,
-		OwnerId: ownerID,
-		Tags:    tags,
+	err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+		_, err := client.CreateBucket(ctx, &castorv1.CreateBucketMetadataRequest{
+			Bucket:  bucket,
+			OwnerId: ownerID,
+			Tags:    tags,
+		})
+		return err
 	})
 	if err != nil {
 		if s, ok := status.FromError(err); ok && s.Code() == codes.AlreadyExists {
@@ -369,7 +652,12 @@ func (e *StorageEngine) CreateBucket(ctx context.Context, bucket, ownerID string
 }
 
 func (e *StorageEngine) ListBuckets(ctx context.Context) ([]BucketInfo, error) {
-	resp, err := e.metaClient.ListBuckets(ctx, &castorv1.ListBucketsMetadataRequest{})
+	var resp *castorv1.ListBucketsMetadataResponse
+	err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+		var err error
+		resp, err = client.ListBuckets(ctx, &castorv1.ListBucketsMetadataRequest{})
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -395,8 +683,11 @@ func (e *StorageEngine) DeleteBucket(ctx context.Context, bucket string) error {
 		return errors.New("bucket name is required")
 	}
 
-	_, err := e.metaClient.DeleteBucket(ctx, &castorv1.DeleteBucketMetadataRequest{
-		Bucket: bucket,
+	err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+		_, err := client.DeleteBucket(ctx, &castorv1.DeleteBucketMetadataRequest{
+			Bucket: bucket,
+		})
+		return err
 	})
 	if err != nil {
 		if s, ok := status.FromError(err); ok {
@@ -412,5 +703,50 @@ func (e *StorageEngine) DeleteBucket(ctx context.Context, bucket string) error {
 
 	return nil
 }
+
+func (e *StorageEngine) CheckBucketExists(ctx context.Context, bucket string) (bool, error) {
+	if bucket == "" {
+		return false, errors.New("bucket name is required")
+	}
+	var resp *castorv1.CheckBucketExistsResponse
+	err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+		var err error
+		resp, err = client.CheckBucketExists(ctx, &castorv1.CheckBucketExistsRequest{Bucket: bucket})
+		return err
+	})
+	if err != nil {
+		if s, ok := status.FromError(err); ok && s.Code() == codes.NotFound {
+			return false, nil
+		}
+		return false, err
+	}
+	return resp.GetExists(), nil
+}
+
+func (e *StorageEngine) GetManifest(ctx context.Context, bucket, key string) (*castorv1.GetManifestResponse, error) {
+	if bucket == "" {
+		return nil, errors.New("bucket name is required")
+	}
+	if key == "" {
+		return nil, errors.New("object key is required")
+	}
+	var resp *castorv1.GetManifestResponse
+	err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+		var err error
+		resp, err = client.GetManifest(ctx, &castorv1.GetManifestRequest{
+			Bucket: bucket,
+			Key:    key,
+		})
+		return err
+	})
+	if err != nil {
+		if s, ok := status.FromError(err); ok && s.Code() == codes.NotFound {
+			return nil, ErrObjectNotFound
+		}
+		return nil, err
+	}
+	return resp, nil
+}
+
 
 

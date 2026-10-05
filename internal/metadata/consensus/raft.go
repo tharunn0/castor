@@ -15,6 +15,28 @@ import (
 	"github.com/tharunn0/castor/internal/metadata/config"
 )
 
+var (
+	ErrNotLeader          = errors.New("not the raft leader")
+	ErrLeaderUnavailable  = errors.New("raft leader unavailable")
+	ErrRaftNotInitialized = errors.New("raft not initialized")
+)
+
+type NotLeaderError struct {
+	LeaderAddr string
+	LeaderID   string
+}
+
+func (e *NotLeaderError) Error() string {
+	if e.LeaderAddr != "" {
+		return fmt.Sprintf("not the raft leader: leader is %s", e.LeaderAddr)
+	}
+	return "not the raft leader"
+}
+
+func (e *NotLeaderError) Unwrap() error {
+	return ErrNotLeader
+}
+
 type RaftNode struct {
 	raft          *raft.Raft
 	fsm           *FSM
@@ -27,6 +49,9 @@ type RaftNode struct {
 }
 
 func NewRaftNode(cfg config.Config, logger *slog.Logger, fsm *FSM) (*RaftNode, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	raftDir := filepath.Join(cfg.DataDir, "raft")
 	if err := os.MkdirAll(raftDir, 0755); err != nil {
 		return nil, err
@@ -124,9 +149,8 @@ func NewRaftNode(cfg config.Config, logger *slog.Logger, fsm *FSM) (*RaftNode, e
 }
 
 func (r *RaftNode) Apply(cmd *Command, timeout time.Duration) (any, error) {
-
 	if r.raft == nil {
-		return nil, fmt.Errorf("raft not initialized")
+		return nil, ErrRaftNotInitialized
 	}
 
 	r.logger.Debug("[Raft Apply]", "cmd Type :", cmd.Type)
@@ -139,9 +163,21 @@ func (r *RaftNode) Apply(cmd *Command, timeout time.Duration) (any, error) {
 
 	deadline := time.Now().Add(timeout)
 	for {
-
 		if time.Until(deadline) <= 0 {
-			return nil, fmt.Errorf("raft deadline exceeded")
+			leader := r.LeaderAddr()
+			if leader == "" {
+				return nil, ErrLeaderUnavailable
+			}
+			return nil, &NotLeaderError{LeaderAddr: leader, LeaderID: r.LeaderID()}
+		}
+
+		if !r.IsLeader() {
+			leader := r.LeaderAddr()
+			if leader != "" {
+				return nil, &NotLeaderError{LeaderAddr: leader, LeaderID: r.LeaderID()}
+			}
+			time.Sleep(20 * time.Millisecond)
+			continue
 		}
 
 		future := r.raft.Apply(data, timeout)
@@ -155,11 +191,16 @@ func (r *RaftNode) Apply(cmd *Command, timeout time.Duration) (any, error) {
 			return future.Response(), nil
 		}
 
-		if errors.Is(err, raft.ErrNotLeader) && time.Now().Before(deadline) {
+		if errors.Is(err, raft.ErrNotLeader) {
+			leader := r.LeaderAddr()
+			if leader != "" {
+				return nil, &NotLeaderError{LeaderAddr: leader, LeaderID: r.LeaderID()}
+			}
 			time.Sleep(20 * time.Millisecond)
 			continue
 		}
 
+		return nil, err
 	}
 }
 
@@ -198,19 +239,52 @@ func (r *RaftNode) LeaderID() string {
 
 func (r *RaftNode) Join(nodeID string, addr string) error {
 	if r.raft == nil {
-		r.logger.Error("[Raft Join] Not Leader", "error", fmt.Errorf("raft not initialized"))
-		return fmt.Errorf("raft not initialized")
+		return ErrRaftNotInitialized
+	}
+	if !r.IsLeader() {
+		leader := r.LeaderAddr()
+		if leader == "" {
+			return ErrLeaderUnavailable
+		}
+		return &NotLeaderError{LeaderAddr: leader, LeaderID: r.LeaderID()}
 	}
 	future := r.raft.AddVoter(raft.ServerID(nodeID), raft.ServerAddress(addr), 0, 0)
-	return future.Error()
+	if err := future.Error(); err != nil {
+		if errors.Is(err, raft.ErrNotLeader) {
+			leader := r.LeaderAddr()
+			if leader == "" {
+				return ErrLeaderUnavailable
+			}
+			return &NotLeaderError{LeaderAddr: leader, LeaderID: r.LeaderID()}
+		}
+		return err
+	}
+	return nil
 }
 
 func (r *RaftNode) Leave(nodeID string) error {
 	if r.raft == nil {
-		return fmt.Errorf("raft not initialized")
+		return ErrRaftNotInitialized
+	}
+	if !r.IsLeader() {
+		leader := r.LeaderAddr()
+		if leader == "" {
+			return ErrLeaderUnavailable
+		}
+		return &NotLeaderError{LeaderAddr: leader, LeaderID: r.LeaderID()}
 	}
 	future := r.raft.RemoveServer(raft.ServerID(nodeID), 0, 0)
-	return future.Error()
+	if err := future.Error(); err != nil {
+		if errors.Is(err, raft.ErrNotLeader) {
+			leader := r.LeaderAddr()
+			if leader == "" {
+				return ErrLeaderUnavailable
+			}
+			return &NotLeaderError{LeaderAddr: leader, LeaderID: r.LeaderID()}
+		}
+		return err
+	}
+	return nil
 }
 
 func (r *RaftNode) Shutdown() error {

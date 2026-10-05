@@ -21,7 +21,9 @@ import (
 	metaserver "github.com/tharunn0/castor/internal/metadata/server"
 	"github.com/tharunn0/castor/internal/metadata/store"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 func TestBufferPoolAcquireRelease(t *testing.T) {
@@ -536,3 +538,113 @@ func TestStorageEngine_DeleteBucket(t *testing.T) {
 		t.Fatal("expected bucket to no longer exist after deletion")
 	}
 }
+
+type mockFollowerServer struct {
+	castorv1.UnimplementedMetadataServiceServer
+	leaderAddr string
+}
+
+func (m *mockFollowerServer) CreateBucket(ctx context.Context, req *castorv1.CreateBucketMetadataRequest) (*castorv1.CreateBucketMetadataResponse, error) {
+	return nil, status.Errorf(codes.Unavailable, "not the raft leader: leader is %s", m.leaderAddr)
+}
+
+func (m *mockFollowerServer) CheckBucketExists(ctx context.Context, req *castorv1.CheckBucketExistsRequest) (*castorv1.CheckBucketExistsResponse, error) {
+	return nil, status.Errorf(codes.Unavailable, "not the raft leader: leader is %s", m.leaderAddr)
+}
+
+func (m *mockFollowerServer) CommitManifest(ctx context.Context, req *castorv1.CommitManifestRequest) (*castorv1.CommitManifestResponse, error) {
+	return nil, status.Errorf(codes.Unavailable, "not the raft leader: leader is %s", m.leaderAddr)
+}
+
+func startMockFollowerNode(t *testing.T, leaderAddr string) (string, func()) {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen on follower port: %v", err)
+	}
+
+	server := grpc.NewServer()
+	castorv1.RegisterMetadataServiceServer(server, &mockFollowerServer{leaderAddr: leaderAddr})
+
+	go func() {
+		_ = server.Serve(lis)
+	}()
+
+	return lis.Addr().String(), func() {
+		server.Stop()
+		_ = lis.Close()
+	}
+}
+
+func TestStorageEngine_MultiNodeRoutingAndFailover(t *testing.T) {
+	leaderAddr, _, cleanupLeader := startTestMetadataNode(t, "real-leader")
+	defer cleanupLeader()
+
+	followerAddr, cleanupFollower := startMockFollowerNode(t, leaderAddr)
+	defer cleanupFollower()
+
+	cfg := config.Config{
+		MetadataNodes:        []string{followerAddr, leaderAddr},
+		ChunkSize:            4096,
+		WriteQuorum:          1,
+		MaxConcurrentUploads: 2,
+	}
+
+	engine := New(cfg, nil)
+	defer engine.Close()
+
+	ctx := context.Background()
+
+	// 1. Create bucket should hit follower, fail with not leader, extract leader hint, route to leader, and succeed
+	bucketName := "failover-bucket"
+	err := engine.CreateBucket(ctx, bucketName, "admin", nil)
+	if err != nil {
+		t.Fatalf("expected CreateBucket to succeed with failover, got %v", err)
+	}
+
+	// 2. CheckBucketExists should now hit leader directly and confirm existence
+	exists, err := engine.CheckBucketExists(ctx, bucketName)
+	if err != nil {
+		t.Fatalf("CheckBucketExists failed: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected bucket to exist on leader")
+	}
+
+	// 3. FindLeader should identify the leader
+	_, activeLeader, err := engine.FindLeader(ctx)
+	if err != nil {
+		t.Fatalf("FindLeader failed: %v", err)
+	}
+	if activeLeader != leaderAddr {
+		t.Fatalf("expected leader %s, got %s", leaderAddr, activeLeader)
+	}
+}
+
+func TestStorageEngine_MetadataNodesManagement(t *testing.T) {
+	cfg := config.Config{
+		MetadataNodes: []string{"127.0.0.1:9090", "127.0.0.1:9092"},
+	}
+	engine := New(cfg, nil)
+	defer engine.Close()
+
+	nodes := engine.AvailableMetadataNodes()
+	if len(nodes) != 2 {
+		t.Fatalf("expected 2 nodes, got %d", len(nodes))
+	}
+
+	// Add new node
+	engine.AddMetadataNode("127.0.0.1:9094")
+	nodes = engine.AvailableMetadataNodes()
+	if len(nodes) != 3 {
+		t.Fatalf("expected 3 nodes after add, got %d", len(nodes))
+	}
+
+	// Add duplicate node should not add twice
+	engine.AddMetadataNode("127.0.0.1:9094")
+	nodes = engine.AvailableMetadataNodes()
+	if len(nodes) != 3 {
+		t.Fatalf("expected 3 nodes after duplicate add, got %d", len(nodes))
+	}
+}
+

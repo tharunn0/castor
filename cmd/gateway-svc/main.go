@@ -29,6 +29,7 @@ func main() {
 		"s3_addr", cfg.S3Addr,
 		"console_addr", cfg.ConsoleAddr,
 		"metadata_addr", cfg.MetadataAddr,
+		"metadata_nodes", cfg.MetadataNodes,
 		"data_nodes", cfg.DataNodes,
 	)
 

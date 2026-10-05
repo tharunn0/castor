@@ -275,6 +275,8 @@ func toGRPCError(err error) error {
 		return err
 	}
 	switch {
+	case errors.Is(err, consensus.ErrNotLeader), errors.Is(err, consensus.ErrLeaderUnavailable), errors.Is(err, consensus.ErrRaftNotInitialized):
+		return status.Error(codes.Unavailable, err.Error())
 	case errors.Is(err, store.ErrNotFound), errors.Is(err, store.ErrBucketNotFound):
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, store.ErrBucketExists):

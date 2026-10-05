@@ -12,6 +12,7 @@ type Config struct {
 	S3Addr               string
 	ConsoleAddr          string
 	MetadataAddr         string
+	MetadataNodes        []string
 	DataNodes            []string
 	RootAccessKey        string
 	RootSecretKey        string
@@ -26,6 +27,17 @@ func Load() Config {
 	s3Addr := getEnv("S3_ADDR", ":9000")
 	consoleAddr := getEnv("CONSOLE_ADDR", ":9001")
 	metadataAddr := getEnv("METADATA_ADDR", "127.0.0.1:9090")
+	metadataNodesRaw := getEnv("METADATA_NODES", metadataAddr)
+	var metadataNodes []string
+	for node := range strings.SplitSeq(metadataNodesRaw, ",") {
+		trimmed := strings.TrimSpace(node)
+		if trimmed != "" {
+			metadataNodes = append(metadataNodes, trimmed)
+		}
+	}
+	if len(metadataNodes) == 0 && metadataAddr != "" {
+		metadataNodes = []string{metadataAddr}
+	}
 
 	dataNodesRaw := getEnv("DATA_NODES", "127.0.0.1:9101,127.0.0.1:9102,127.0.0.1:9103")
 	var dataNodes []string
@@ -64,6 +76,7 @@ func Load() Config {
 		S3Addr:               s3Addr,
 		ConsoleAddr:          consoleAddr,
 		MetadataAddr:         metadataAddr,
+		MetadataNodes:        metadataNodes,
 		DataNodes:            dataNodes,
 		RootAccessKey:        rootAccessKey,
 		RootSecretKey:        rootSecretKey,

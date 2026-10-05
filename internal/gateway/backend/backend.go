@@ -60,11 +60,11 @@ func (b *CastorBackend) HeadBucket(ctx context.Context, input *s3.HeadBucketInpu
 	if input == nil || input.Bucket == nil || *input.Bucket == "" {
 		return nil, s3err.GetAPIError(s3err.ErrInvalidBucketName)
 	}
-	exists, err := b.metaClient.CheckBucketExists(ctx, &castorv1.CheckBucketExistsRequest{Bucket: *input.Bucket})
+	exists, err := b.engine.CheckBucketExists(ctx, *input.Bucket)
 	if err != nil {
 		return nil, err
 	}
-	if !exists.GetExists() {
+	if !exists {
 		return nil, s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
 	}
 	return &s3.HeadBucketOutput{}, nil
@@ -116,23 +116,20 @@ func (b *CastorBackend) GetObject(ctx context.Context, input *s3.GetObjectInput)
 	var isRangeValid bool
 
 	if input.Range != nil && *input.Range != "" {
-		exists, err := b.metaClient.CheckBucketExists(ctx, &castorv1.CheckBucketExistsRequest{Bucket: *input.Bucket})
+		exists, err := b.engine.CheckBucketExists(ctx, *input.Bucket)
 		if err != nil {
-			if s, ok := status.FromError(err); ok && s.Code() == codes.NotFound {
+			if errors.Is(err, storage.ErrBucketNotFound) {
 				return nil, s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
 			}
 			return nil, err
 		}
-		if !exists.GetExists() {
+		if !exists {
 			return nil, s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
 		}
 
-		manifest, err := b.metaClient.GetManifest(ctx, &castorv1.GetManifestRequest{
-			Bucket: *input.Bucket,
-			Key:    *input.Key,
-		})
+		manifest, err := b.engine.GetManifest(ctx, *input.Bucket, *input.Key)
 		if err != nil {
-			if s, ok := status.FromError(err); ok && s.Code() == codes.NotFound {
+			if errors.Is(err, storage.ErrObjectNotFound) {
 				return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
 			}
 			return nil, err
@@ -314,5 +311,3 @@ func (b *CastorBackend) DeleteBucket(ctx context.Context, bucket string) error {
 
 	return nil
 }
-
-

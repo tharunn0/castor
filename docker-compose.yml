@@ -135,6 +135,7 @@ services:
       - CONSOLE_ADDR=:9001
       - METADATA_ADDR=metadata-1:9090
       - DATA_NODES=data-1:9101,data-2:9101,data-3:9101
+      - METADATA_NODES=metadata-1:9090,metadata-2:9090,metadata-3:9090
       - ROOT_ACCESS_KEY_ID=admin
       - ROOT_SECRET_ACCESS_KEY=admin123
       - WRITE_QUORUM=2

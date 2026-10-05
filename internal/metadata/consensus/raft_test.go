@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -114,3 +115,37 @@ func TestRaftNode_MembershipChanges(t *testing.T) {
 		t.Logf("leave returned (expected if not leader): %v", err)
 	}
 }
+
+func TestRaftNode_ErrorsWhenNotLeader(t *testing.T) {
+	// 1. Uninitialized node
+	var emptyNode RaftNode
+	req := &castorv1.CreateBucketMetadataRequest{Bucket: "b1"}
+	cmd, err := NewCreateBucketCommand(req)
+	if err != nil {
+		t.Fatalf("failed to create command: %v", err)
+	}
+
+	_, err = emptyNode.Apply(cmd, time.Second)
+	if !errors.Is(err, ErrRaftNotInitialized) {
+		t.Fatalf("expected ErrRaftNotInitialized, got %v", err)
+	}
+	if err := emptyNode.Join("node-2", "127.0.0.1:9091"); !errors.Is(err, ErrRaftNotInitialized) {
+		t.Fatalf("expected ErrRaftNotInitialized from Join, got %v", err)
+	}
+	if err := emptyNode.Leave("node-2"); !errors.Is(err, ErrRaftNotInitialized) {
+		t.Fatalf("expected ErrRaftNotInitialized from Leave, got %v", err)
+	}
+
+	// 2. NotLeaderError unwrapping and formatting
+	nle := &NotLeaderError{
+		LeaderAddr: "127.0.0.1:9091",
+		LeaderID:   "meta-1",
+	}
+	if !errors.Is(nle, ErrNotLeader) {
+		t.Fatalf("expected NotLeaderError to match ErrNotLeader")
+	}
+	if nle.Error() != "not the raft leader: leader is 127.0.0.1:9091" {
+		t.Fatalf("unexpected error message: %s", nle.Error())
+	}
+}
+
