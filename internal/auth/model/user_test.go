@@ -224,3 +224,88 @@ func TestUser_Validate(t *testing.T) {
 		})
 	}
 }
+
+func TestRegisterRequest_Validate(t *testing.T) {
+	tests := []struct {
+		name    string
+		req     RegisterRequest
+		wantErr error
+	}{
+		{
+			name: "valid request",
+			req: RegisterRequest{
+				Username: "charlie",
+				Email:    "charlie@example.com",
+				Password: "password123",
+				Role:     RoleUser,
+				AdminKey: "",
+			},
+			wantErr: nil,
+		},
+		{
+			name: "valid request with empty role",
+			req: RegisterRequest{
+				Username: "charlie",
+				Email:    "charlie@example.com",
+				Password: "password123",
+			},
+			wantErr: nil,
+		},
+		{
+			name: "invalid username",
+			req: RegisterRequest{
+				Username: "c",
+				Email:    "charlie@example.com",
+				Password: "password123",
+			},
+			wantErr: ErrInvalidUsername,
+		},
+		{
+			name: "invalid email",
+			req: RegisterRequest{
+				Username: "charlie",
+				Email:    "invalid-email",
+				Password: "password123",
+			},
+			wantErr: ErrInvalidEmail,
+		},
+		{
+			name: "password too short",
+			req: RegisterRequest{
+				Username: "charlie",
+				Email:    "charlie@example.com",
+				Password: "123",
+			},
+			wantErr: ErrInvalidPassword,
+		},
+		{
+			name: "password too long",
+			req: RegisterRequest{
+				Username: "charlie",
+				Email:    "charlie@example.com",
+				Password: strings.Repeat("p", 129),
+			},
+			wantErr: ErrInvalidPassword,
+		},
+		{
+			name: "invalid role",
+			req: RegisterRequest{
+				Username: "charlie",
+				Email:    "charlie@example.com",
+				Password: "password123",
+				Role:     "NOT_A_ROLE",
+			},
+			wantErr: ErrInvalidRole,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.req.Validate()
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("expected error %v, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+

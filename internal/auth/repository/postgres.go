@@ -2,8 +2,12 @@ package repository
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/tharunn0/castor/internal/auth/model"
 )
@@ -30,7 +34,36 @@ func (r *PostgresRepository) Close() {
 }
 
 func (r *PostgresRepository) CreateUser(ctx context.Context, input model.CreateUserInput) (*model.User, error) {
-	return nil, ErrNotImplemented
+	if r.pool == nil {
+		return nil, ErrNotImplemented
+	}
+
+	query := `
+		INSERT INTO users (id, username, email, password_hash, role, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, username, email, password_hash, role, created_at
+	`
+	id := uuid.New()
+	createdAt := time.Now().UTC()
+
+	var user model.User
+	err := r.pool.QueryRow(ctx, query, id, input.Username, input.Email, input.PasswordHash, string(input.Role), createdAt).Scan(
+		&user.ID,
+		&user.Username,
+		&user.Email,
+		&user.PasswordHash,
+		&user.Role,
+		&user.CreatedAt,
+	)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return nil, ErrUserAlreadyExists
+		}
+		return nil, fmt.Errorf("insert user: %w", err)
+	}
+
+	return &user, nil
 }
 
 func (r *PostgresRepository) GetUserByID(ctx context.Context, id uuid.UUID) (*model.User, error) {

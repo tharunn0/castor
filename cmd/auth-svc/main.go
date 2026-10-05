@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/tharunn0/castor/internal/auth/config"
+	"github.com/tharunn0/castor/internal/auth/database"
+	"github.com/tharunn0/castor/internal/auth/handler"
 	"github.com/tharunn0/castor/internal/auth/health"
 	"github.com/tharunn0/castor/internal/auth/repository"
+	"github.com/tharunn0/castor/internal/auth/service"
 	"github.com/tharunn0/castor/internal/telemetry"
 )
 
@@ -25,34 +27,29 @@ func main() {
 		"http_addr", cfg.HTTPAddr,
 	)
 
-	var pool *pgxpool.Pool
-	poolConfig, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	pool, err := database.NewPool(context.Background(), cfg.DatabaseURL)
 	if err != nil {
-		logger.Warn("invalid postgres 17 configuration url", "error", err)
-	} else {
-		p, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
-		if err != nil {
-			logger.Warn("failed to initialize postgres 17 pool", "error", err)
-		} else {
-			pool = p
-			defer pool.Close()
+		logger.Error("failed to initialize postgres pool", "error", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
 
-			pingCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			if err := pool.Ping(pingCtx); err != nil {
-				logger.Warn("unable to connect to postgres 17 database", "error", err)
-			} else {
-				logger.Info("connected to postgres 17 database successfully")
-			}
-			cancel()
-		}
+	if err := database.Ping(context.Background(), pool, 2*time.Second); err != nil {
+		logger.Warn("unable to connect to postgres", "error", err)
+	} else {
+		logger.Info("connected to postgres database successfully")
 	}
 
 	repo := repository.NewPostgresRepository(pool)
-	healthApp := health.NewApp(cfg, repo)
+	svc := service.NewService(cfg, repo)
+	authHandler := handler.NewAuthHandler(svc)
+
+	app := health.NewApp(cfg, repo)
+	authHandler.RegisterRoutes(app)
 
 	go func() {
 		logger.Info("auth HTTP server listening", "addr", cfg.HTTPAddr)
-		if err := healthApp.Listen(cfg.HTTPAddr, fiber.ListenConfig{
+		if err := app.Listen(cfg.HTTPAddr, fiber.ListenConfig{
 			DisableStartupMessage: true,
 		}); err != nil && !errors.Is(err, net.ErrClosed) {
 			logger.Error("auth HTTP server error", "error", err)
@@ -65,6 +62,6 @@ func main() {
 	sig := <-shutdownChan
 	logger.Info("shutting down auth service", "signal", sig.String())
 
-	_ = healthApp.Shutdown()
+	_ = app.Shutdown()
 	logger.Info("auth service stopped cleanly")
 }

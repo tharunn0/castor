@@ -9,6 +9,7 @@ import (
 type Config struct {
 	HTTPAddr    string
 	DatabaseURL string
+	AdminKey    string
 }
 
 func Load() Config {
@@ -17,6 +18,7 @@ func Load() Config {
 	return Config{
 		HTTPAddr:    getEnv("AUTH_HTTP_ADDR", ":9095"),
 		DatabaseURL: getEnv("AUTH_DATABASE_URL", "postgres://postgres:postgres@localhost:5432/castor_auth?sslmode=disable"),
+		AdminKey:    getEnv("ADMIN_KEY", getEnv("AUTH_ADMIN_KEY", "")),
 	}
 }
 

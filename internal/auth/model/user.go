@@ -80,6 +80,40 @@ func (in *CreateUserInput) Validate() error {
 	return nil
 }
 
+type RegisterRequest struct {
+	Username string `json:"username"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
+	Role     Role   `json:"role,omitempty"`
+	AdminKey string `json:"admin_key,omitempty"`
+}
+
+func (r *RegisterRequest) Validate() error {
+	if err := validateUsername(r.Username); err != nil {
+		return err
+	}
+	if err := validateEmail(r.Email); err != nil {
+		return err
+	}
+	if len(r.Password) < 6 || len(r.Password) > 128 {
+		return ErrInvalidPassword
+	}
+	if r.Role != "" {
+		if err := r.Role.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type RegisterResponse struct {
+	ID        uuid.UUID `json:"id"`
+	Username  string    `json:"username"`
+	Email     string    `json:"email"`
+	Role      Role      `json:"role"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 func validateUsername(username string) error {
 	if !validUsernameRegex.MatchString(username) {
 		return ErrInvalidUsername
