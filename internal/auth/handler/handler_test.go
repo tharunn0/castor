@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/tharunn0/castor/internal/auth/httperr"
+	"github.com/tharunn0/castor/internal/auth/jwt"
 	"github.com/tharunn0/castor/internal/auth/model"
 	"github.com/tharunn0/castor/internal/auth/repository"
 )
@@ -230,5 +232,57 @@ func TestAuthHandler_Login(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAuthHandler_Dashboard(t *testing.T) {
+	jwtSecret := "test-dashboard-jwt-secret-32-chars!"
+	userID := uuid.New()
+	validToken, err := jwt.GenerateToken(userID, "alice", model.RoleUser, jwtSecret, 1*time.Hour)
+	if err != nil {
+		t.Fatalf("failed to generate token: %v", err)
+	}
+
+	app := fiber.New(fiber.Config{
+		ErrorHandler: httperr.ErrorHandler,
+	})
+	h := NewAuthHandler(&mockAuthService{})
+	h.RegisterRoutes(app, jwtSecret)
+
+	// 1. Unauthenticated request to /api/v1/dashboard -> 401 Unauthorized
+	reqUnauth := httptest.NewRequest(http.MethodGet, "/api/v1/dashboard", nil)
+	respUnauth, err := app.Test(reqUnauth)
+	if err != nil {
+		t.Fatalf("unauthenticated request failed: %v", err)
+	}
+	if respUnauth.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401 for unauthenticated request, got %d", respUnauth.StatusCode)
+	}
+
+	// 2. Authenticated request with Bearer token to /api/v1/dashboard -> 200 OK
+	reqAuth := httptest.NewRequest(http.MethodGet, "/api/v1/dashboard", nil)
+	reqAuth.Header.Set("Authorization", "Bearer "+validToken)
+	respAuth, err := app.Test(reqAuth)
+	if err != nil {
+		t.Fatalf("authenticated request failed: %v", err)
+	}
+	if respAuth.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 for authenticated request, got %d", respAuth.StatusCode)
+	}
+
+	body, _ := io.ReadAll(respAuth.Body)
+	var payload struct {
+		Message string `json:"message"`
+		User    struct {
+			ID       string `json:"id"`
+			Username string `json:"username"`
+			Role     string `json:"role"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("failed to parse dashboard response: %v", err)
+	}
+	if payload.User.Username != "alice" || payload.User.ID != userID.String() {
+		t.Errorf("unexpected user in payload: %+v", payload)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/tharunn0/castor/internal/auth/config"
 	"github.com/tharunn0/castor/internal/auth/handler"
+	"github.com/tharunn0/castor/internal/auth/jwt"
 	"github.com/tharunn0/castor/internal/auth/model"
 )
 
@@ -190,6 +191,57 @@ func TestServer_ErrorHandler(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected status 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestServer_DashboardRoute_Protected(t *testing.T) {
+	jwtSecret := "server-test-jwt-secret-key-32-chars!"
+	cfg := config.Config{
+		HTTPAddr:  ":9095",
+		JWTSecret: jwtSecret,
+		JWTExpiry: 1 * time.Hour,
+	}
+
+	authH := handler.NewAuthHandler(&mockAuthService{})
+	pinger := &mockPinger{err: nil}
+	healthH := handler.NewHealthHandler(cfg, pinger)
+	srv := New(cfg, authH, healthH)
+
+	// 1. Dashboard without token -> 401 Unauthorized
+	reqUnauth := httptest.NewRequest(http.MethodGet, "/api/v1/dashboard", nil)
+	respUnauth, err := srv.App().Test(reqUnauth)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if respUnauth.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401 for unauthenticated dashboard, got %d", respUnauth.StatusCode)
+	}
+
+	// 2. Dashboard with valid token -> 200 OK
+	userID := uuid.New()
+	token, err := jwt.GenerateToken(userID, "alice", model.RoleUser, jwtSecret, 1*time.Hour)
+	if err != nil {
+		t.Fatalf("failed to generate token: %v", err)
+	}
+
+	reqAuth := httptest.NewRequest(http.MethodGet, "/api/v1/dashboard", nil)
+	reqAuth.Header.Set("Authorization", "Bearer "+token)
+	respAuth, err := srv.App().Test(reqAuth)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if respAuth.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 for authenticated dashboard, got %d", respAuth.StatusCode)
+	}
+
+	// 3. Verify health endpoint remains open without token -> 200 OK
+	reqHealth := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+	respHealth, err := srv.App().Test(reqHealth)
+	if err != nil {
+		t.Fatalf("health request failed: %v", err)
+	}
+	if respHealth.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 for open health endpoint, got %d", respHealth.StatusCode)
 	}
 }
 

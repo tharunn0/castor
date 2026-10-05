@@ -19,7 +19,7 @@ func New(cfg config.Config, authHandler *handler.AuthHandler, healthHandler *han
 		ErrorHandler: httperr.ErrorHandler,
 	})
 
-	RegisterRoutes(app, authHandler, healthHandler)
+	RegisterRoutes(app, cfg, authHandler, healthHandler)
 
 	return &Server{
 		app: app,
