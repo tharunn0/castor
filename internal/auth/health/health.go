@@ -6,6 +6,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/tharunn0/castor/internal/auth/config"
+	"github.com/tharunn0/castor/internal/auth/httperr"
 )
 
 type Pinger interface {
@@ -13,7 +14,9 @@ type Pinger interface {
 }
 
 func NewApp(cfg config.Config, pinger Pinger) *fiber.App {
-	app := fiber.New()
+	app := fiber.New(fiber.Config{
+		ErrorHandler: httperr.ErrorHandler,
+	})
 	handler := NewHandler(cfg, pinger)
 
 	app.Get("/health", handler)

@@ -12,6 +12,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"github.com/tharunn0/castor/internal/auth/httperr"
 	"github.com/tharunn0/castor/internal/auth/model"
 	"github.com/tharunn0/castor/internal/auth/repository"
 )
@@ -124,7 +125,9 @@ func TestAuthHandler_Register(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			app := fiber.New()
+			app := fiber.New(fiber.Config{
+				ErrorHandler: httperr.ErrorHandler,
+			})
 			h := NewAuthHandler(&mockAuthService{registerFunc: tc.serviceFunc})
 			h.RegisterRoutes(app)
 
