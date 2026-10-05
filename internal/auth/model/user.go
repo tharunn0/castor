@@ -1,10 +1,14 @@
 package model
 
 import (
+	"net/mail"
+	"regexp"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+var validUsernameRegex = regexp.MustCompile(`^[a-zA-Z0-9_\-\.]{3,64}$`)
 
 type Role string
 
@@ -12,6 +16,15 @@ const (
 	RoleAdmin Role = "ADMIN"
 	RoleUser  Role = "USER"
 )
+
+func (r Role) Validate() error {
+	switch r {
+	case RoleAdmin, RoleUser:
+		return nil
+	default:
+		return ErrInvalidRole
+	}
+}
 
 type User struct {
 	ID           uuid.UUID `json:"id"`
@@ -22,9 +35,72 @@ type User struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+func (u *User) Validate() error {
+	if u.ID == uuid.Nil {
+		return ErrInvalidUserID
+	}
+	if err := validateUsername(u.Username); err != nil {
+		return err
+	}
+	if err := validateEmail(u.Email); err != nil {
+		return err
+	}
+	if err := validatePasswordHash(u.PasswordHash); err != nil {
+		return err
+	}
+	if err := u.Role.Validate(); err != nil {
+		return err
+	}
+	if u.CreatedAt.IsZero() {
+		return ErrInvalidCreatedAt
+	}
+	return nil
+}
+
 type CreateUserInput struct {
 	Username     string
 	Email        string
 	PasswordHash string
 	Role         Role
+}
+
+func (in *CreateUserInput) Validate() error {
+	if err := validateUsername(in.Username); err != nil {
+		return err
+	}
+	if err := validateEmail(in.Email); err != nil {
+		return err
+	}
+	if err := validatePasswordHash(in.PasswordHash); err != nil {
+		return err
+	}
+	if err := in.Role.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateUsername(username string) error {
+	if !validUsernameRegex.MatchString(username) {
+		return ErrInvalidUsername
+	}
+	return nil
+}
+
+func validateEmail(email string) error {
+	if len(email) == 0 || len(email) > 255 {
+		return ErrInvalidEmail
+	}
+	addr, err := mail.ParseAddress(email)
+	if err != nil || addr.Address != email {
+		return ErrInvalidEmail
+	}
+	return nil
+}
+
+func validatePasswordHash(hash string) error {
+	if len(hash) == 0 || len(hash) > 255 {
+		return ErrInvalidPasswordHash
+	}
+	return nil
 }
