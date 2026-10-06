@@ -663,3 +663,96 @@ func TestCastorBackend_DeleteBucket(t *testing.T) {
 		t.Fatalf("expected HeadBucket ErrNoSuchBucket after deletion, got %v", err)
 	}
 }
+
+func TestCastorBackend_DeleteObject(t *testing.T) {
+	nodeAddr, dataCleanup := startTestDataNode(t, "data-del-obj")
+	defer dataCleanup()
+
+	metaAddr, metaClient, metaCleanup := startTestMetadataNode(t, "meta-del-obj")
+	defer metaCleanup()
+
+	cfg := config.Config{
+		ChunkSize:            4096,
+		WriteQuorum:          1,
+		MaxConcurrentUploads: 2,
+		DataNodes:            []string{nodeAddr},
+		MetadataAddr:         metaAddr,
+	}
+
+	engine := storage.New(cfg, metaClient)
+	defer engine.Close()
+
+	be := New(engine, metaClient)
+	ctx := context.Background()
+
+	if _, err := be.DeleteObject(ctx, nil); !errors.Is(err, s3err.GetAPIError(s3err.ErrInvalidBucketName)) {
+		t.Fatalf("expected ErrInvalidBucketName on nil input, got %v", err)
+	}
+
+	emptyBucket := ""
+	validKey := "test.txt"
+	if _, err := be.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &emptyBucket, Key: &validKey}); !errors.Is(err, s3err.GetAPIError(s3err.ErrInvalidBucketName)) {
+		t.Fatalf("expected ErrInvalidBucketName on empty bucket, got %v", err)
+	}
+
+	validBucket := "backend-del-bucket"
+	emptyKey := ""
+	if _, err := be.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &validBucket, Key: &emptyKey}); !errors.Is(err, s3err.GetAPIError(s3err.ErrNoSuchKey)) {
+		t.Fatalf("expected ErrNoSuchKey on empty key, got %v", err)
+	}
+
+	nonExistentBucket := "missing-bucket"
+	if _, err := be.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &nonExistentBucket, Key: &validKey}); !errors.Is(err, s3err.GetBucketErr(s3err.ErrNoSuchBucket, nonExistentBucket)) {
+		t.Fatalf("expected ErrNoSuchBucket, got %v", err)
+	}
+
+	if err := be.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: &validBucket}, nil); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	missingKey := "nonexistent.txt"
+	out, err := be.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &validBucket, Key: &missingKey})
+	if err != nil {
+		t.Fatalf("expected idempotent success on deleting missing key, got err: %v", err)
+	}
+	if out == nil {
+		t.Fatal("expected non-nil DeleteObjectOutput")
+	}
+
+	objData := []byte("payload to be deleted")
+	objLen := int64(len(objData))
+	_, err = be.PutObject(ctx, s3response.PutObjectInput{
+		Bucket:        &validBucket,
+		Key:           &validKey,
+		Body:          bytes.NewReader(objData),
+		ContentLength: &objLen,
+	})
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	getOut, err := be.GetObject(ctx, &s3.GetObjectInput{Bucket: &validBucket, Key: &validKey})
+	if err != nil {
+		t.Fatalf("GetObject failed: %v", err)
+	}
+	_ = getOut.Body.Close()
+
+	out, err = be.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &validBucket, Key: &validKey})
+	if err != nil {
+		t.Fatalf("DeleteObject failed: %v", err)
+	}
+	if out == nil {
+		t.Fatal("expected non-nil DeleteObjectOutput")
+	}
+
+	_, err = be.GetObject(ctx, &s3.GetObjectInput{Bucket: &validBucket, Key: &validKey})
+	if !errors.Is(err, s3err.GetAPIError(s3err.ErrNoSuchKey)) {
+		t.Fatalf("expected ErrNoSuchKey after deletion, got %v", err)
+	}
+
+	_, err = be.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &validBucket, Key: &validKey})
+	if err != nil {
+		t.Fatalf("expected idempotent success on second delete, got %v", err)
+	}
+}
+

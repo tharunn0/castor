@@ -41,21 +41,76 @@ func TestBufferPoolAcquireRelease(t *testing.T) {
 	pool.Release(buf2)
 }
 
-func TestStorageEngineSignatures(t *testing.T) {
+func TestStorageEngine_DeleteObject(t *testing.T) {
+	metaAddr, metaClient, metaCleanup := startTestMetadataNode(t, "meta-del-obj")
+	defer metaCleanup()
+
 	cfg := config.Config{
 		ChunkSize:            4096,
 		WriteQuorum:          2,
 		MaxConcurrentUploads: 4,
 		DataNodes:            []string{"127.0.0.1:9101"},
+		MetadataAddr:         metaAddr,
 	}
 
-	engine := New(cfg, nil)
+	engine := New(cfg, metaClient)
 	defer engine.Close()
 
 	ctx := context.Background()
-	err := engine.DeleteObject(ctx, "test-bucket", "test-key")
-	if !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("expected ErrNotImplemented, got %v", err)
+
+	if err := engine.DeleteObject(ctx, "", "file.txt"); err == nil {
+		t.Fatal("expected error on empty bucket name")
+	}
+	if err := engine.DeleteObject(ctx, "bkt", ""); err == nil {
+		t.Fatal("expected error on empty object key")
+	}
+
+	if err := engine.DeleteObject(ctx, "nonexistent-bkt", "file.txt"); !errors.Is(err, ErrBucketNotFound) {
+		t.Fatalf("expected ErrBucketNotFound, got %v", err)
+	}
+
+	bucketName := "obj-del-bucket"
+	if err := engine.CreateBucket(ctx, bucketName, "admin", nil); err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	if err := engine.DeleteObject(ctx, bucketName, "missing.txt"); !errors.Is(err, ErrObjectNotFound) {
+		t.Fatalf("expected ErrObjectNotFound, got %v", err)
+	}
+
+	chunkID := "del-chunk-123"
+	_, err := metaClient.CommitManifest(ctx, &castorv1.CommitManifestRequest{
+		Bucket:   bucketName,
+		Key:      "sample.txt",
+		Size:     100,
+		Etag:     "testetag",
+		ChunkIds: []string{chunkID},
+		OwnerId:  "admin",
+	})
+	if err != nil {
+		t.Fatalf("failed to commit manifest: %v", err)
+	}
+
+	m, err := engine.GetManifest(ctx, bucketName, "sample.txt")
+	if err != nil || m == nil {
+		t.Fatalf("expected manifest to exist, got %v", err)
+	}
+
+	if err := engine.DeleteObject(ctx, bucketName, "sample.txt"); err != nil {
+		t.Fatalf("failed to delete object: %v", err)
+	}
+
+	_, _, err = engine.GetObject(ctx, bucketName, "sample.txt")
+	if !errors.Is(err, ErrObjectNotFound) {
+		t.Fatalf("expected ErrObjectNotFound after deletion, got %v", err)
+	}
+
+	if err := engine.DeleteObject(ctx, bucketName, "sample.txt"); !errors.Is(err, ErrObjectNotFound) {
+		t.Fatalf("expected ErrObjectNotFound on duplicate delete, got %v", err)
+	}
+
+	if err := engine.DeleteBucket(ctx, bucketName); err != nil {
+		t.Fatalf("expected DeleteBucket to succeed after object deleted, got %v", err)
 	}
 }
 
@@ -553,6 +608,10 @@ func (m *mockFollowerServer) CheckBucketExists(ctx context.Context, req *castorv
 }
 
 func (m *mockFollowerServer) CommitManifest(ctx context.Context, req *castorv1.CommitManifestRequest) (*castorv1.CommitManifestResponse, error) {
+	return nil, status.Errorf(codes.Unavailable, "not the raft leader: leader is %s", m.leaderAddr)
+}
+
+func (m *mockFollowerServer) DeleteManifest(ctx context.Context, req *castorv1.DeleteManifestRequest) (*castorv1.DeleteManifestResponse, error) {
 	return nil, status.Errorf(codes.Unavailable, "not the raft leader: leader is %s", m.leaderAddr)
 }
 

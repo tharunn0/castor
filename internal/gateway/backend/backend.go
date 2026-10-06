@@ -311,3 +311,28 @@ func (b *CastorBackend) DeleteBucket(ctx context.Context, bucket string) error {
 
 	return nil
 }
+
+func (b *CastorBackend) DeleteObject(ctx context.Context, input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
+	if input == nil || input.Bucket == nil || *input.Bucket == "" {
+		return nil, s3err.GetAPIError(s3err.ErrInvalidBucketName)
+	}
+	if input.Key == nil || *input.Key == "" {
+		return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
+	}
+
+	err := b.engine.DeleteObject(ctx, *input.Bucket, *input.Key)
+	if err != nil {
+		if errors.Is(err, storage.ErrBucketNotFound) {
+			return nil, s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
+		}
+		if errors.Is(err, storage.ErrObjectNotFound) {
+			return &s3.DeleteObjectOutput{}, nil
+		}
+		if s, ok := status.FromError(err); ok && s.Code() == codes.NotFound {
+			return &s3.DeleteObjectOutput{}, nil
+		}
+		return nil, err
+	}
+
+	return &s3.DeleteObjectOutput{}, nil
+}

@@ -604,7 +604,36 @@ func (r *chunkStreamReader) Close() error {
 }
 
 func (e *StorageEngine) DeleteObject(ctx context.Context, bucket, key string) error {
-	return ErrNotImplemented
+	if bucket == "" {
+		return errors.New("bucket name is required")
+	}
+	if key == "" {
+		return errors.New("object key is required")
+	}
+
+	exists, err := e.CheckBucketExists(ctx, bucket)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrBucketNotFound
+	}
+
+	err = e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+		_, err := client.DeleteManifest(ctx, &castorv1.DeleteManifestRequest{
+			Bucket: bucket,
+			Key:    key,
+		})
+		return err
+	})
+	if err != nil {
+		if s, ok := status.FromError(err); ok && s.Code() == codes.NotFound {
+			return ErrObjectNotFound
+		}
+		return err
+	}
+
+	return nil
 }
 
 func (e *StorageEngine) Close() error {
