@@ -707,3 +707,107 @@ func TestStorageEngine_MetadataNodesManagement(t *testing.T) {
 	}
 }
 
+func TestStorageEngine_ListObjects(t *testing.T) {
+	metaAddr, metaClient, metaCleanup := startTestMetadataNode(t, "meta-list-obj")
+	defer metaCleanup()
+
+	cfg := config.Config{
+		ChunkSize:            4096,
+		WriteQuorum:          1,
+		MaxConcurrentUploads: 2,
+		MetadataAddr:         metaAddr,
+	}
+
+	engine := New(cfg, metaClient)
+	defer engine.Close()
+
+	ctx := context.Background()
+
+	// 1. Validation
+	if _, err := engine.ListObjects(ctx, "", "", "", "", 10); err == nil {
+		t.Fatal("expected error for empty bucket name")
+	}
+
+	// 2. Non-existent bucket
+	if _, err := engine.ListObjects(ctx, "nonexistent-bucket", "", "", "", 10); !errors.Is(err, ErrBucketNotFound) {
+		t.Fatalf("expected ErrBucketNotFound, got %v", err)
+	}
+
+	// 3. Create bucket
+	bucketName := "test-list-objects"
+	err := engine.CreateBucket(ctx, bucketName, "admin", nil)
+	if err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	// 4. Empty bucket listing
+	emptyResp, err := engine.ListObjects(ctx, bucketName, "", "", "", 10)
+	if err != nil {
+		t.Fatalf("failed to list empty bucket: %v", err)
+	}
+	if len(emptyResp.GetManifests()) != 0 || len(emptyResp.GetCommonPrefixes()) != 0 {
+		t.Fatalf("expected empty response, got %d manifests, %d prefixes", len(emptyResp.GetManifests()), len(emptyResp.GetCommonPrefixes()))
+	}
+
+	// 5. Populate manifests
+	keys := []string{"notes.txt", "photos/2026/img1.jpg", "photos/vacation.png"}
+	for _, k := range keys {
+		_, err := metaClient.CommitManifest(ctx, &castorv1.CommitManifestRequest{
+			Bucket:  bucketName,
+			Key:     k,
+			Size:    100,
+			Etag:    "etag-" + k,
+			OwnerId: "admin",
+		})
+		if err != nil {
+			t.Fatalf("failed to commit manifest for %s: %v", k, err)
+		}
+	}
+
+	// 6. Flat listing
+	flatResp, err := engine.ListObjects(ctx, bucketName, "", "", "", 10)
+	if err != nil {
+		t.Fatalf("failed flat listing: %v", err)
+	}
+	if len(flatResp.GetManifests()) != 3 {
+		t.Fatalf("expected 3 manifests, got %d", len(flatResp.GetManifests()))
+	}
+
+	// 7. Folder hierarchy with delimiter
+	delimResp, err := engine.ListObjects(ctx, bucketName, "", "/", "", 10)
+	if err != nil {
+		t.Fatalf("failed delimiter listing: %v", err)
+	}
+	if len(delimResp.GetManifests()) != 1 || delimResp.GetManifests()[0].GetKey() != "notes.txt" {
+		t.Fatalf("expected 1 manifest notes.txt, got %v", delimResp.GetManifests())
+	}
+	if len(delimResp.GetCommonPrefixes()) != 1 || delimResp.GetCommonPrefixes()[0] != "photos/" {
+		t.Fatalf("expected 1 common prefix photos/, got %v", delimResp.GetCommonPrefixes())
+	}
+
+	// 8. Prefix listing with delimiter
+	prefixResp, err := engine.ListObjects(ctx, bucketName, "photos/", "/", "", 10)
+	if err != nil {
+		t.Fatalf("failed prefix delimiter listing: %v", err)
+	}
+	if len(prefixResp.GetManifests()) != 1 || prefixResp.GetManifests()[0].GetKey() != "photos/vacation.png" {
+		t.Fatalf("expected photos/vacation.png, got %v", prefixResp.GetManifests())
+	}
+	if len(prefixResp.GetCommonPrefixes()) != 1 || prefixResp.GetCommonPrefixes()[0] != "photos/2026/" {
+		t.Fatalf("expected photos/2026/, got %v", prefixResp.GetCommonPrefixes())
+	}
+
+	// 9. Pagination with maxKeys
+	pageResp, err := engine.ListObjects(ctx, bucketName, "", "", "", 2)
+	if err != nil {
+		t.Fatalf("failed page listing: %v", err)
+	}
+	if !pageResp.GetIsTruncated() {
+		t.Fatal("expected is_truncated to be true")
+	}
+	if len(pageResp.GetManifests()) != 2 {
+		t.Fatalf("expected 2 manifests on first page, got %d", len(pageResp.GetManifests()))
+	}
+}
+
+

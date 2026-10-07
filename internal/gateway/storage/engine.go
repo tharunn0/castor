@@ -777,5 +777,40 @@ func (e *StorageEngine) GetManifest(ctx context.Context, bucket, key string) (*c
 	return resp, nil
 }
 
+func (e *StorageEngine) ListObjects(ctx context.Context, bucket, prefix, delimiter, marker string, maxKeys int32) (*castorv1.ListManifestsResponse, error) {
+	if bucket == "" {
+		return nil, errors.New("bucket name is required")
+	}
+
+	exists, err := e.CheckBucketExists(ctx, bucket)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrBucketNotFound
+	}
+
+	var resp *castorv1.ListManifestsResponse
+	err = e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+		var err error
+		resp, err = client.ListManifests(ctx, &castorv1.ListManifestsRequest{
+			Bucket:    bucket,
+			Prefix:    prefix,
+			Delimiter: delimiter,
+			Marker:    marker,
+			MaxKeys:   maxKeys,
+		})
+		return err
+	})
+	if err != nil {
+		if s, ok := status.FromError(err); ok && s.Code() == codes.NotFound {
+			return nil, ErrBucketNotFound
+		}
+		return nil, err
+	}
+
+	return resp, nil
+}
+
 
 
