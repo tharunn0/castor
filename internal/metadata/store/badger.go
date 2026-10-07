@@ -201,19 +201,27 @@ func (s *Store) ListManifests(ctx context.Context, bucket, prefix, delimiter, ma
 		it := txn.NewIterator(badger.DefaultIteratorOptions)
 		defer it.Close()
 
-		startKey := searchPrefix
 		if marker != "" {
-			startKey = ManifestKey(bucket, marker)
+			if delimiter != "" && strings.HasSuffix(marker, delimiter) {
+				nextPrefix := PrefixNext(ManifestKey(bucket, marker))
+				if nextPrefix != nil {
+					it.Seek(nextPrefix)
+				} else {
+					return nil
+				}
+			} else {
+				startKey := ManifestKey(bucket, marker)
+				it.Seek(startKey)
+				if it.Valid() && bytes.Equal(it.Item().Key(), startKey) {
+					it.Next()
+				}
+			}
+		} else {
+			it.Seek(searchPrefix)
 		}
 
-		it.Seek(startKey)
-
-		// Skip marker itself if encountered exactly
-		if marker != "" && it.Valid() && bytes.Equal(it.Item().Key(), ManifestKey(bucket, marker)) {
-			it.Next()
-		}
-
-		for ; it.ValidForPrefix(searchPrefix); it.Next() {
+		var lastEmitted string
+		for it.ValidForPrefix(searchPrefix) {
 			if ctx != nil && ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -221,9 +229,7 @@ func (s *Store) ListManifests(ctx context.Context, bucket, prefix, delimiter, ma
 			currentCount := len(result.Manifests) + len(result.CommonPrefixes)
 			if currentCount >= limit {
 				result.IsTruncated = true
-				if len(result.Manifests) > 0 {
-					result.NextMarker = result.Manifests[len(result.Manifests)-1].Key
-				}
+				result.NextMarker = lastEmitted
 				break
 			}
 
@@ -239,6 +245,7 @@ func (s *Store) ListManifests(ctx context.Context, bucket, prefix, delimiter, ma
 			}
 
 			if record.Status == "deleted" {
+				it.Next()
 				continue
 			}
 
@@ -250,12 +257,21 @@ func (s *Store) ListManifests(ctx context.Context, bucket, prefix, delimiter, ma
 					if !commonPrefixesSeen[commonPrefix] {
 						commonPrefixesSeen[commonPrefix] = true
 						result.CommonPrefixes = append(result.CommonPrefixes, commonPrefix)
+						lastEmitted = commonPrefix
+					}
+					nextPrefix := PrefixNext(ManifestKey(bucket, commonPrefix))
+					if nextPrefix != nil {
+						it.Seek(nextPrefix)
+					} else {
+						break
 					}
 					continue
 				}
 			}
 
 			result.Manifests = append(result.Manifests, &record)
+			lastEmitted = record.Key
+			it.Next()
 		}
 		return nil
 	})

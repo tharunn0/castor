@@ -130,3 +130,18 @@ func ParseMultipartPartKey(key []byte) (uploadID string, partNum int32, err erro
 	}
 	return parts[0], int32(num), nil
 }
+
+// PrefixNext computes the upper lexicographical bound for keys starting with the given prefix.
+// It returns nil if all bytes are 0xff.
+func PrefixNext(b []byte) []byte {
+	out := make([]byte, len(b))
+	copy(out, b)
+	for i := len(out) - 1; i >= 0; i-- {
+		if out[i] < 0xff {
+			out[i]++
+			return out[:i+1]
+		}
+	}
+	return nil
+}
+

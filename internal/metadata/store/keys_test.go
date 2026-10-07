@@ -139,3 +139,18 @@ func TestMultipartPartKeys_SortingAndParsing(t *testing.T) {
 		t.Fatal("expected error on missing part number separator")
 	}
 }
+
+func TestPrefixNext(t *testing.T) {
+	b := []byte("photos/")
+	next := PrefixNext(b)
+	if bytes.Compare(next, b) <= 0 {
+		t.Fatalf("expected next to be greater than b")
+	}
+	if string(next) != "photos0" {
+		t.Fatalf("expected photos0, got %s", string(next))
+	}
+	if PrefixNext([]byte{0xff, 0xff}) != nil {
+		t.Fatal("expected nil for all 0xff bytes")
+	}
+}
+

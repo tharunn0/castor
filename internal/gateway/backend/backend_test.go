@@ -756,3 +756,167 @@ func TestCastorBackend_DeleteObject(t *testing.T) {
 	}
 }
 
+func TestCastorBackend_ListObjectsV2(t *testing.T) {
+	node1Addr, cleanup1 := startTestDataNode(t, "data-list-1")
+	defer cleanup1()
+	node2Addr, cleanup2 := startTestDataNode(t, "data-list-2")
+	defer cleanup2()
+
+	metaAddr, metaClient, metaCleanup := startTestMetadataNode(t, "meta-list-be")
+	defer metaCleanup()
+
+	cfg := config.Config{
+		ChunkSize:            4096,
+		WriteQuorum:          2,
+		MaxConcurrentUploads: 4,
+		DataNodes:            []string{node1Addr, node2Addr},
+		MetadataAddr:         metaAddr,
+	}
+
+	engine := storage.New(cfg, metaClient)
+	defer engine.Close()
+
+	be := New(engine, metaClient)
+	ctx := context.Background()
+
+	// 1. Validation errors
+	if _, err := be.ListObjectsV2(ctx, nil); !errors.Is(err, s3err.GetAPIError(s3err.ErrInvalidBucketName)) {
+		t.Fatalf("expected ErrInvalidBucketName on nil input, got %v", err)
+	}
+	emptyStr := ""
+	if _, err := be.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: &emptyStr}); !errors.Is(err, s3err.GetAPIError(s3err.ErrInvalidBucketName)) {
+		t.Fatalf("expected ErrInvalidBucketName on empty bucket, got %v", err)
+	}
+
+	// 2. Missing bucket
+	missingBucket := "missing-bucket"
+	if _, err := be.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: &missingBucket}); !errors.Is(err, s3err.GetBucketErr(s3err.ErrNoSuchBucket, missingBucket)) {
+		t.Fatalf("expected ErrNoSuchBucket, got %v", err)
+	}
+
+	// 3. Create bucket and seed objects
+	bucketName := "list-v2-test-bucket"
+	err := be.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: &bucketName}, nil)
+	if err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	testFiles := map[string][]byte{
+		"readme.txt":           []byte("hello world"),
+		"docs/api.md":          []byte("api spec"),
+		"docs/architecture.md": []byte("architecture doc"),
+		"images/logo.png":      []byte("image payload"),
+	}
+
+	for k, v := range testFiles {
+		val := v
+		sz := int64(len(val))
+		keyStr := k
+		_, err := be.PutObject(ctx, s3response.PutObjectInput{
+			Bucket:        &bucketName,
+			Key:           &keyStr,
+			Body:          bytes.NewReader(val),
+			ContentLength: &sz,
+		})
+		if err != nil {
+			t.Fatalf("PutObject failed for %s: %v", k, err)
+		}
+	}
+
+	// 4. Flat listing (no prefix, no delimiter)
+	flatRes, err := be.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket: &bucketName,
+	})
+	if err != nil {
+		t.Fatalf("flat ListObjectsV2 failed: %v", err)
+	}
+	if len(flatRes.Contents) != 4 {
+		t.Fatalf("expected 4 objects in flat listing, got %d", len(flatRes.Contents))
+	}
+	if len(flatRes.CommonPrefixes) != 0 {
+		t.Fatalf("expected 0 common prefixes in flat listing, got %d", len(flatRes.CommonPrefixes))
+	}
+	for _, obj := range flatRes.Contents {
+		if !strings.HasPrefix(*obj.ETag, "\"") || !strings.HasSuffix(*obj.ETag, "\"") {
+			t.Fatalf("expected quoted ETag, got %s", *obj.ETag)
+		}
+	}
+
+	// 5. Delimiter listing (root level "/")
+	slash := "/"
+	delimRes, err := be.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket:    &bucketName,
+		Delimiter: &slash,
+	})
+	if err != nil {
+		t.Fatalf("delimiter ListObjectsV2 failed: %v", err)
+	}
+	if len(delimRes.Contents) != 1 || *delimRes.Contents[0].Key != "readme.txt" {
+		t.Fatalf("expected 1 root object readme.txt, got %v", delimRes.Contents)
+	}
+	if len(delimRes.CommonPrefixes) != 2 {
+		t.Fatalf("expected 2 common prefixes (docs/, images/), got %v", delimRes.CommonPrefixes)
+	}
+
+	// 6. Subfolder prefix listing
+	docsPrefix := "docs/"
+	subRes, err := be.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket:    &bucketName,
+		Prefix:    &docsPrefix,
+		Delimiter: &slash,
+	})
+	if err != nil {
+		t.Fatalf("subfolder ListObjectsV2 failed: %v", err)
+	}
+	if len(subRes.Contents) != 2 {
+		t.Fatalf("expected 2 docs files, got %d", len(subRes.Contents))
+	}
+	if len(subRes.CommonPrefixes) != 0 {
+		t.Fatalf("expected 0 common prefixes under docs/, got %d", len(subRes.CommonPrefixes))
+	}
+
+	// 7. Pagination with MaxKeys
+	max2 := int32(2)
+	page1, err := be.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket:  &bucketName,
+		MaxKeys: &max2,
+	})
+	if err != nil {
+		t.Fatalf("pagination page 1 failed: %v", err)
+	}
+	if !*page1.IsTruncated || page1.NextContinuationToken == nil {
+		t.Fatalf("expected truncated page 1 with NextContinuationToken: %+v", page1)
+	}
+	if len(page1.Contents) != 2 {
+		t.Fatalf("expected 2 items on page 1, got %d", len(page1.Contents))
+	}
+
+	page2, err := be.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket:            &bucketName,
+		ContinuationToken: page1.NextContinuationToken,
+		MaxKeys:           &max2,
+	})
+	if err != nil {
+		t.Fatalf("pagination page 2 failed: %v", err)
+	}
+	if len(page2.Contents) != 2 {
+		t.Fatalf("expected 2 items on page 2, got %d", len(page2.Contents))
+	}
+
+	// 8. Legacy V1 ListObjects
+	v1Res, err := be.ListObjects(ctx, &s3.ListObjectsInput{
+		Bucket:    &bucketName,
+		Delimiter: &slash,
+	})
+	if err != nil {
+		t.Fatalf("ListObjects V1 failed: %v", err)
+	}
+	if len(v1Res.Contents) != 1 || *v1Res.Contents[0].Key != "readme.txt" {
+		t.Fatalf("expected 1 root object in V1, got %v", v1Res.Contents)
+	}
+	if len(v1Res.CommonPrefixes) != 2 {
+		t.Fatalf("expected 2 common prefixes in V1, got %v", v1Res.CommonPrefixes)
+	}
+}
+
+

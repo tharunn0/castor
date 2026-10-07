@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
 	"github.com/tharunn0/castor/internal/gateway/storage"
 	"github.com/versity/versitygw/backend"
@@ -336,3 +338,170 @@ func (b *CastorBackend) DeleteObject(ctx context.Context, input *s3.DeleteObject
 
 	return &s3.DeleteObjectOutput{}, nil
 }
+
+func (b *CastorBackend) ListObjectsV2(ctx context.Context, input *s3.ListObjectsV2Input) (s3response.ListObjectsV2Result, error) {
+	if input == nil || input.Bucket == nil || *input.Bucket == "" {
+		return s3response.ListObjectsV2Result{}, s3err.GetAPIError(s3err.ErrInvalidBucketName)
+	}
+
+	prefix := aws.ToString(input.Prefix)
+	delimiter := aws.ToString(input.Delimiter)
+	marker := aws.ToString(input.ContinuationToken)
+	if marker == "" && input.StartAfter != nil {
+		marker = *input.StartAfter
+	}
+
+	maxKeys := aws.ToInt32(input.MaxKeys)
+	if maxKeys <= 0 {
+		maxKeys = 1000
+	}
+
+	resp, err := b.engine.ListObjects(ctx, *input.Bucket, prefix, delimiter, marker, maxKeys)
+	if err != nil {
+		if errors.Is(err, storage.ErrBucketNotFound) {
+			return s3response.ListObjectsV2Result{}, s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
+		}
+		if s, ok := status.FromError(err); ok && s.Code() == codes.NotFound {
+			return s3response.ListObjectsV2Result{}, s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
+		}
+		return s3response.ListObjectsV2Result{}, err
+	}
+
+	contents := make([]s3response.Object, 0, len(resp.GetManifests()))
+	for _, m := range resp.GetManifests() {
+		etag := fmt.Sprintf("%q", m.GetEtag())
+		key := m.GetKey()
+		size := m.GetSize()
+		var lastMod time.Time
+		if m.GetUpdatedAt() != nil {
+			lastMod = m.GetUpdatedAt().AsTime()
+		} else if m.GetCreatedAt() != nil {
+			lastMod = m.GetCreatedAt().AsTime()
+		}
+
+		obj := s3response.Object{
+			Key:          &key,
+			ETag:         &etag,
+			Size:         &size,
+			LastModified: &lastMod,
+			StorageClass: types.ObjectStorageClassStandard,
+		}
+		if input.FetchOwner != nil && *input.FetchOwner {
+			ownerID := m.GetOwnerId()
+			if ownerID == "" {
+				ownerID = "admin"
+			}
+			obj.Owner = &types.Owner{
+				ID:          aws.String(ownerID),
+				DisplayName: aws.String(ownerID),
+			}
+		}
+		contents = append(contents, obj)
+	}
+
+	commonPrefixes := make([]types.CommonPrefix, 0, len(resp.GetCommonPrefixes()))
+	for _, cp := range resp.GetCommonPrefixes() {
+		prefixStr := cp
+		commonPrefixes = append(commonPrefixes, types.CommonPrefix{
+			Prefix: &prefixStr,
+		})
+	}
+
+	keyCount := int32(len(contents) + len(commonPrefixes))
+	isTruncated := resp.GetIsTruncated()
+
+	res := s3response.ListObjectsV2Result{
+		Name:              input.Bucket,
+		Prefix:            input.Prefix,
+		Delimiter:         input.Delimiter,
+		MaxKeys:           aws.Int32(maxKeys),
+		ContinuationToken: input.ContinuationToken,
+		StartAfter:        input.StartAfter,
+		KeyCount:          &keyCount,
+		IsTruncated:       &isTruncated,
+		Contents:          contents,
+		CommonPrefixes:    commonPrefixes,
+	}
+
+	if isTruncated && resp.GetNextMarker() != "" {
+		nextTok := resp.GetNextMarker()
+		res.NextContinuationToken = &nextTok
+	}
+
+	return res, nil
+}
+
+func (b *CastorBackend) ListObjects(ctx context.Context, input *s3.ListObjectsInput) (s3response.ListObjectsResult, error) {
+	if input == nil || input.Bucket == nil || *input.Bucket == "" {
+		return s3response.ListObjectsResult{}, s3err.GetAPIError(s3err.ErrInvalidBucketName)
+	}
+
+	prefix := aws.ToString(input.Prefix)
+	delimiter := aws.ToString(input.Delimiter)
+	marker := aws.ToString(input.Marker)
+	maxKeys := aws.ToInt32(input.MaxKeys)
+	if maxKeys <= 0 {
+		maxKeys = 1000
+	}
+
+	resp, err := b.engine.ListObjects(ctx, *input.Bucket, prefix, delimiter, marker, maxKeys)
+	if err != nil {
+		if errors.Is(err, storage.ErrBucketNotFound) {
+			return s3response.ListObjectsResult{}, s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
+		}
+		if s, ok := status.FromError(err); ok && s.Code() == codes.NotFound {
+			return s3response.ListObjectsResult{}, s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
+		}
+		return s3response.ListObjectsResult{}, err
+	}
+
+	contents := make([]s3response.Object, 0, len(resp.GetManifests()))
+	for _, m := range resp.GetManifests() {
+		etag := fmt.Sprintf("%q", m.GetEtag())
+		key := m.GetKey()
+		size := m.GetSize()
+		var lastMod time.Time
+		if m.GetUpdatedAt() != nil {
+			lastMod = m.GetUpdatedAt().AsTime()
+		} else if m.GetCreatedAt() != nil {
+			lastMod = m.GetCreatedAt().AsTime()
+		}
+
+		contents = append(contents, s3response.Object{
+			Key:          &key,
+			ETag:         &etag,
+			Size:         &size,
+			LastModified: &lastMod,
+			StorageClass: types.ObjectStorageClassStandard,
+		})
+	}
+
+	commonPrefixes := make([]types.CommonPrefix, 0, len(resp.GetCommonPrefixes()))
+	for _, cp := range resp.GetCommonPrefixes() {
+		prefixStr := cp
+		commonPrefixes = append(commonPrefixes, types.CommonPrefix{
+			Prefix: &prefixStr,
+		})
+	}
+
+	isTruncated := resp.GetIsTruncated()
+
+	res := s3response.ListObjectsResult{
+		Name:           input.Bucket,
+		Prefix:         input.Prefix,
+		Delimiter:      input.Delimiter,
+		Marker:         input.Marker,
+		MaxKeys:        aws.Int32(maxKeys),
+		IsTruncated:    &isTruncated,
+		Contents:       contents,
+		CommonPrefixes: commonPrefixes,
+	}
+
+	if isTruncated && resp.GetNextMarker() != "" {
+		nextTok := resp.GetNextMarker()
+		res.NextMarker = &nextTok
+	}
+
+	return res, nil
+}
+

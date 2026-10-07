@@ -179,6 +179,52 @@ func TestStore_ManifestQueries(t *testing.T) {
 	if len(resDelim.Manifests) != 1 || resDelim.Manifests[0].Key != "notes.txt" {
 		t.Fatalf("expected root manifest 'notes.txt', got %v", resDelim.Manifests)
 	}
+
+	// Test ListManifests with delimiter and pagination across page boundaries
+	p1, err := s.ListManifests(ctx, "my-bucket", "", "/", "", 1)
+	if err != nil {
+		t.Fatalf("failed page 1 listing: %v", err)
+	}
+	if !p1.IsTruncated || p1.NextMarker != "notes.txt" || len(p1.Manifests) != 1 {
+		t.Fatalf("unexpected page 1 result: %+v", p1)
+	}
+
+	p2, err := s.ListManifests(ctx, "my-bucket", "", "/", p1.NextMarker, 1)
+	if err != nil {
+		t.Fatalf("failed page 2 listing: %v", err)
+	}
+	if p2.IsTruncated || len(p2.CommonPrefixes) != 1 || p2.CommonPrefixes[0] != "photos/" {
+		t.Fatalf("unexpected page 2 result: %+v", p2)
+	}
+
+	// Seed an earlier folder "docs/" to test common prefix truncation as first page item
+	mDocs := &castorv1.ManifestRecord{
+		Bucket: "my-bucket",
+		Key:    "docs/readme.txt",
+		Status: "committed",
+	}
+	_ = s.DB().Update(func(txn *badger.Txn) error {
+		val, _ := proto.Marshal(mDocs)
+		return txn.Set(ManifestKey(mDocs.Bucket, mDocs.Key), val)
+	})
+
+	// Page 1 now encounters "docs/" common prefix first
+	pd1, err := s.ListManifests(ctx, "my-bucket", "", "/", "", 1)
+	if err != nil {
+		t.Fatalf("failed docs page 1: %v", err)
+	}
+	if !pd1.IsTruncated || pd1.NextMarker != "docs/" || len(pd1.CommonPrefixes) != 1 || pd1.CommonPrefixes[0] != "docs/" {
+		t.Fatalf("unexpected docs page 1 result: %+v", pd1)
+	}
+
+	// Page 2 resumes from common prefix "docs/"
+	pd2, err := s.ListManifests(ctx, "my-bucket", "", "/", pd1.NextMarker, 1)
+	if err != nil {
+		t.Fatalf("failed docs page 2: %v", err)
+	}
+	if !pd2.IsTruncated || pd2.NextMarker != "notes.txt" || len(pd2.Manifests) != 1 || pd2.Manifests[0].Key != "notes.txt" {
+		t.Fatalf("unexpected docs page 2 result: %+v", pd2)
+	}
 }
 
 func TestStore_ChunkQueries(t *testing.T) {
