@@ -48,7 +48,7 @@ func main() {
 	authHandler := handler.NewAuthHandler(svc)
 	healthHandler := handler.NewHealthHandler(cfg, repo)
 
-	srv := server.New(cfg, authHandler, healthHandler)
+	srv := server.New(cfg, authHandler, healthHandler, logger)
 
 	go func() {
 		logger.Info("auth HTTP server listening", "addr", cfg.HTTPAddr)

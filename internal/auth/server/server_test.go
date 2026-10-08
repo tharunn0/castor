@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -263,3 +265,128 @@ func TestServer_Lifecycle(t *testing.T) {
 		t.Fatalf("expected clean timeout shutdown, got %v", err)
 	}
 }
+
+func TestServer_LogRoutes(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	}))
+
+	cfg := config.Config{
+		HTTPAddr: ":9095",
+	}
+	authH := handler.NewAuthHandler(&mockAuthService{})
+	healthH := handler.NewHealthHandler(cfg, &mockPinger{})
+
+	srv := New(cfg, authH, healthH, logger)
+	if srv == nil {
+		t.Fatal("expected non-nil server")
+	}
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) == 0 || lines[0] == "" {
+		t.Fatal("expected debug logs to be emitted")
+	}
+
+	type logRecord struct {
+		Level        string `json:"level"`
+		Msg          string `json:"msg"`
+		Method       string `json:"method"`
+		Path         string `json:"path"`
+		Endpoint     string `json:"endpoint"`
+		FullEndpoint string `json:"full_endpoint"`
+		URL          string `json:"url"`
+	}
+
+	seenPaths := make(map[string]logRecord)
+	for _, line := range lines {
+		var rec logRecord
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("failed to parse log json: %v", err)
+		}
+		if rec.Level != "DEBUG" {
+			t.Errorf("expected level DEBUG, got %s", rec.Level)
+		}
+		if rec.Msg != "active handler registered" {
+			t.Errorf("expected msg 'active handler registered', got %s", rec.Msg)
+		}
+		if rec.Path != rec.Endpoint {
+			t.Errorf("expected endpoint to match path, got endpoint=%s path=%s", rec.Endpoint, rec.Path)
+		}
+		expectedFull := "http://localhost:9095" + rec.Path
+		if rec.FullEndpoint != expectedFull {
+			t.Errorf("expected full_endpoint=%s, got %s", expectedFull, rec.FullEndpoint)
+		}
+		if rec.URL != expectedFull {
+			t.Errorf("expected url=%s, got %s", expectedFull, rec.URL)
+		}
+		seenPaths[rec.Path] = rec
+	}
+
+	expectedPaths := []string{
+		"/api/v1/health",
+		"/api/v1/dashboard",
+		"/api/v1/register",
+		"/api/v1/login",
+	}
+
+	for _, expectedPath := range expectedPaths {
+		if _, exists := seenPaths[expectedPath]; !exists {
+			t.Errorf("expected active handler for path %s was not logged", expectedPath)
+		}
+	}
+
+	// Test nil logger safety
+	srv.LogRoutes(nil)
+}
+
+func TestServer_FormatEndpoint(t *testing.T) {
+	tests := []struct {
+		httpAddr string
+		path     string
+		expected string
+	}{
+		{
+			httpAddr: ":9095",
+			path:     "/api/v1/health",
+			expected: "http://localhost:9095/api/v1/health",
+		},
+		{
+			httpAddr: "127.0.0.1:9095",
+			path:     "/api/v1/login",
+			expected: "http://127.0.0.1:9095/api/v1/login",
+		},
+		{
+			httpAddr: "0.0.0.0:9095",
+			path:     "/api/v1/register",
+			expected: "http://0.0.0.0:9095/api/v1/register",
+		},
+		{
+			httpAddr: "http://auth.example.com",
+			path:     "/api/v1/dashboard",
+			expected: "http://auth.example.com/api/v1/dashboard",
+		},
+		{
+			httpAddr: "",
+			path:     "/api/v1/health",
+			expected: "/api/v1/health",
+		},
+		{
+			httpAddr: ":9095",
+			path:     "api/v1/health",
+			expected: "http://localhost:9095/api/v1/health",
+		},
+	}
+
+	for _, tc := range tests {
+		srv := &Server{
+			cfg: config.Config{HTTPAddr: tc.httpAddr},
+		}
+		got := srv.formatEndpoint(tc.path)
+		if got != tc.expected {
+			t.Errorf("formatEndpoint(%q, %q) = %q, expected %q", tc.httpAddr, tc.path, got, tc.expected)
+		}
+	}
+}
+
+
