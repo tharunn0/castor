@@ -3,6 +3,7 @@ services:
   metadata-1:
     build:
       context: ../../
+      dockerfile: deploy/docker/Dockerfile
       target: metadata-svc
     image: castor-metadata-svc:latest
     container_name: castor-metadata-1
@@ -25,6 +26,7 @@ services:
   metadata-2:
     build:
       context: ../../
+      dockerfile: deploy/docker/Dockerfile
       target: metadata-svc
     image: castor-metadata-svc:latest
     container_name: castor-metadata-2
@@ -48,6 +50,7 @@ services:
   metadata-3:
     build:
       context: ../../
+      dockerfile: deploy/docker/Dockerfile
       target: metadata-svc
     image: castor-metadata-svc:latest
     container_name: castor-metadata-3
@@ -72,6 +75,7 @@ services:
   data-1:
     build:
       context: ../../
+      dockerfile: deploy/docker/Dockerfile
       target: data-svc
     image: castor-data-svc:latest
     container_name: castor-data-1
@@ -90,6 +94,7 @@ services:
   data-2:
     build:
       context: ../../
+      dockerfile: deploy/docker/Dockerfile
       target: data-svc
     image: castor-data-svc:latest
     container_name: castor-data-2
@@ -108,6 +113,7 @@ services:
   data-3:
     build:
       context: ../../
+      dockerfile: deploy/docker/Dockerfile
       target: data-svc
     image: castor-data-svc:latest
     container_name: castor-data-3
@@ -127,6 +133,7 @@ services:
   gateway:
     build:
       context: ../../
+      dockerfile: deploy/docker/Dockerfile
       target: gateway-svc
     image: castor-gateway-svc:latest
     container_name: castor-gateway

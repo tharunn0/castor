@@ -26,12 +26,12 @@ services:
   auth-svc:
     build:
       context: ../../
-      target: auth-svc
+      dockerfile: deploy/docker/Dockerfile.auth
     image: castor-auth-svc:latest
     container_name: castor-auth-svc
     environment:
       # App Environment & Observability
-      - APP_ENV=off
+      - APP_ENV=dev
       - LOG_LEVEL=debug # error, info, debug
 
       # HTTP Server
