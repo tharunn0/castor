@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
+	"github.com/tharunn0/castor/internal/auth/authctx"
 	"github.com/tharunn0/castor/internal/auth/config"
 	"github.com/tharunn0/castor/internal/auth/jwt"
 	"github.com/tharunn0/castor/internal/auth/model"
@@ -126,7 +127,11 @@ func (s *Service) CreateCredential(ctx context.Context, userID uuid.UUID, label 
 		return nil, repository.ErrNotImplemented
 	}
 	if userID == uuid.Nil {
-		return nil, model.ErrInvalidUserID
+		if ctxUserID, ok := authctx.UserID(ctx); ok && ctxUserID != uuid.Nil {
+			userID = ctxUserID
+		} else {
+			return nil, model.ErrInvalidUserID
+		}
 	}
 	if len(label) > 64 {
 		return nil, model.ErrInvalidLabel
@@ -157,7 +162,11 @@ func (s *Service) ListCredentials(ctx context.Context, userID uuid.UUID) ([]*mod
 		return nil, repository.ErrNotImplemented
 	}
 	if userID == uuid.Nil {
-		return nil, model.ErrInvalidUserID
+		if ctxUserID, ok := authctx.UserID(ctx); ok && ctxUserID != uuid.Nil {
+			userID = ctxUserID
+		} else {
+			return nil, model.ErrInvalidUserID
+		}
 	}
 
 	creds, err := s.credRepo.ListCredentialsByUserID(ctx, userID)
@@ -177,7 +186,11 @@ func (s *Service) RevokeCredential(ctx context.Context, userID uuid.UUID, access
 		return repository.ErrNotImplemented
 	}
 	if userID == uuid.Nil {
-		return model.ErrInvalidUserID
+		if ctxUserID, ok := authctx.UserID(ctx); ok && ctxUserID != uuid.Nil {
+			userID = ctxUserID
+		} else {
+			return model.ErrInvalidUserID
+		}
 	}
 	if accessKeyID == "" {
 		return model.ErrInvalidAccessKeyID

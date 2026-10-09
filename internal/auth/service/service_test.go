@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
+	"github.com/tharunn0/castor/internal/auth/authctx"
 	"github.com/tharunn0/castor/internal/auth/config"
 	"github.com/tharunn0/castor/internal/auth/model"
 	"github.com/tharunn0/castor/internal/auth/repository"
@@ -371,6 +372,34 @@ func TestService_CreateCredential(t *testing.T) {
 		}
 		if cred.SecretAccessKey == "" {
 			t.Error("expected secret access key to be populated on creation")
+		}
+	})
+
+	t.Run("extract user id from context when nil", func(t *testing.T) {
+		userRepo := &mockUserRepo{
+			getUserByIDFunc: func(ctx context.Context, id uuid.UUID) (*model.User, error) {
+				return &model.User{ID: id, Username: "testuser"}, nil
+			},
+		}
+
+		credRepo := &mockCredentialRepo{
+			createCredentialFunc: func(ctx context.Context, in model.CreateCredentialInput) (*model.S3Credential, error) {
+				return &model.S3Credential{
+					AccessKeyID: in.AccessKeyID,
+					UserID:      in.UserID,
+					Status:      in.Status,
+				}, nil
+			},
+		}
+
+		svc := NewService(cfg, userRepo, credRepo)
+		ctxWithUser := authctx.WithUser(context.Background(), authctx.UserContext{UserID: userID})
+		cred, err := svc.CreateCredential(ctxWithUser, uuid.Nil, "Context Key")
+		if err != nil {
+			t.Fatalf("unexpected error creating credential from context: %v", err)
+		}
+		if cred.UserID != userID {
+			t.Errorf("expected user ID %s from context, got %s", userID, cred.UserID)
 		}
 	})
 

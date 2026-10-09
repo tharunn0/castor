@@ -197,3 +197,49 @@ func TestRequireRole(t *testing.T) {
 		t.Errorf("expected status 401 for unauthenticated request, got %d", respBare.StatusCode)
 	}
 }
+
+func TestMiddleware_RequestContext(t *testing.T) {
+	app := fiber.New()
+	app.Use(NewMiddleware(testSecret))
+
+	userID := uuid.New()
+	token, err := GenerateToken(userID, "bob", model.RoleAdmin, testSecret, time.Hour)
+	if err != nil {
+		t.Fatalf("failed to generate token: %v", err)
+	}
+
+	app.Get("/context-check", func(c fiber.Ctx) error {
+		reqCtx := c.Context()
+		claims, ok := ClaimsFromContext(reqCtx)
+		if !ok || claims == nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "missing claims in request context")
+		}
+		if claims.Username != "bob" {
+			return fiber.NewError(fiber.StatusInternalServerError, "username mismatch in request context")
+		}
+
+		uID, ok := UserIDFromContext(reqCtx)
+		if !ok || uID != userID {
+			return fiber.NewError(fiber.StatusInternalServerError, "user id mismatch in request context")
+		}
+
+		role, ok := UserRoleFromContext(reqCtx)
+		if !ok || role != model.RoleAdmin {
+			return fiber.NewError(fiber.StatusInternalServerError, "role mismatch in request context")
+		}
+
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/context-check", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+}
+

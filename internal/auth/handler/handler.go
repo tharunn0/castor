@@ -3,6 +3,7 @@ package handler
 import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"github.com/tharunn0/castor/internal/auth/authctx"
 	"github.com/tharunn0/castor/internal/auth/jwt"
 	"github.com/tharunn0/castor/internal/auth/model"
 	"github.com/tharunn0/castor/internal/auth/service"
@@ -76,17 +77,18 @@ func (h *AuthHandler) Login(c fiber.Ctx) error {
 }
 
 func (h *AuthHandler) Dashboard(c fiber.Ctx) error {
-	claims, ok := jwt.GetClaims(c)
-	if !ok || claims == nil {
+	ctx := c.Context()
+	user, ok := authctx.FromContext(ctx)
+	if !ok {
 		return fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
 	}
 
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
 		"message": "welcome to the castor dashboard",
 		"user": fiber.Map{
-			"id":       claims.UserID,
-			"username": claims.Username,
-			"role":     claims.Role,
+			"id":       user.UserID,
+			"username": user.Username,
+			"role":     user.Role,
 		},
 		"stats": fiber.Map{
 			"cluster_status": "healthy",
@@ -97,7 +99,8 @@ func (h *AuthHandler) Dashboard(c fiber.Ctx) error {
 }
 
 func (h *AuthHandler) CreateKey(c fiber.Ctx) error {
-	userID, ok := jwt.GetUserID(c)
+	ctx := c.Context()
+	userID, ok := authctx.UserID(ctx)
 	if !ok || userID == uuid.Nil {
 		return fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
 	}
@@ -107,7 +110,7 @@ func (h *AuthHandler) CreateKey(c fiber.Ctx) error {
 	}
 	_ = c.Bind().JSON(&req)
 
-	cred, err := h.svc.CreateCredential(c.Context(), userID, req.Label)
+	cred, err := h.svc.CreateCredential(ctx, userID, req.Label)
 	if err != nil {
 		return err
 	}
@@ -116,12 +119,13 @@ func (h *AuthHandler) CreateKey(c fiber.Ctx) error {
 }
 
 func (h *AuthHandler) ListKeys(c fiber.Ctx) error {
-	userID, ok := jwt.GetUserID(c)
+	ctx := c.Context()
+	userID, ok := authctx.UserID(ctx)
 	if !ok || userID == uuid.Nil {
 		return fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
 	}
 
-	creds, err := h.svc.ListCredentials(c.Context(), userID)
+	creds, err := h.svc.ListCredentials(ctx, userID)
 	if err != nil {
 		return err
 	}
@@ -130,7 +134,8 @@ func (h *AuthHandler) ListKeys(c fiber.Ctx) error {
 }
 
 func (h *AuthHandler) RevokeKey(c fiber.Ctx) error {
-	userID, ok := jwt.GetUserID(c)
+	ctx := c.Context()
+	userID, ok := authctx.UserID(ctx)
 	if !ok || userID == uuid.Nil {
 		return fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
 	}
@@ -140,7 +145,7 @@ func (h *AuthHandler) RevokeKey(c fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "missing key_id parameter")
 	}
 
-	if err := h.svc.RevokeCredential(c.Context(), userID, keyID); err != nil {
+	if err := h.svc.RevokeCredential(ctx, userID, keyID); err != nil {
 		return err
 	}
 
