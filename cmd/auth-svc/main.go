@@ -44,7 +44,7 @@ func main() {
 	}
 
 	repo := repository.NewPostgresRepository(pool)
-	svc := service.NewService(cfg, repo)
+	svc := service.NewService(cfg, repo).WithLogger(logger)
 	authHandler := handler.NewAuthHandler(svc)
 	healthHandler := handler.NewHealthHandler(cfg, repo)
 

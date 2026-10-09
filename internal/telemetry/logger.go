@@ -55,7 +55,7 @@ func NewLogger(env ...string) *slog.Logger {
 		})
 	}
 
-	return slog.New(handler)
+	return slog.New(NewTraceContextHandler(handler))
 }
 
 // InitLogger initializes a new logger, sets it as the default slog logger, and returns it.

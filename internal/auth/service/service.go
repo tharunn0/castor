@@ -4,15 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
-	"golang.org/x/crypto/bcrypt"
 	"github.com/tharunn0/castor/internal/auth/authctx"
 	"github.com/tharunn0/castor/internal/auth/config"
 	"github.com/tharunn0/castor/internal/auth/jwt"
 	"github.com/tharunn0/castor/internal/auth/model"
 	"github.com/tharunn0/castor/internal/auth/repository"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type AuthService interface {
@@ -28,6 +29,7 @@ type Service struct {
 	cfg      config.Config
 	userRepo repository.UserRepository
 	credRepo repository.CredentialRepository
+	logger   *slog.Logger
 }
 
 func NewService(cfg config.Config, userRepo repository.UserRepository, credRepos ...repository.CredentialRepository) *Service {
@@ -41,7 +43,15 @@ func NewService(cfg config.Config, userRepo repository.UserRepository, credRepos
 		cfg:      cfg,
 		userRepo: userRepo,
 		credRepo: credRepo,
+		logger:   slog.Default(),
 	}
+}
+
+func (s *Service) WithLogger(l *slog.Logger) *Service {
+	if l != nil {
+		s.logger = l
+	}
+	return s
 }
 
 func (s *Service) Register(ctx context.Context, req model.RegisterRequest) (*model.RegisterResponse, error) {
@@ -105,6 +115,7 @@ func (s *Service) Login(ctx context.Context, req model.LoginRequest) (*model.Log
 		ttl = 24 * time.Hour
 	}
 
+	s.logger.Debug("jwt created with duration", "ttl", ttl)
 	token, err := jwt.GenerateToken(user.ID, user.Username, user.Role, s.cfg.JWTSecret, ttl)
 	if err != nil {
 		return nil, fmt.Errorf("generate token: %w", err)

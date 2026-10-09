@@ -32,10 +32,10 @@ func NewMetrics(serviceName string, env ...string) *Metrics {
 			Handler:  http.NotFoundHandler(),
 			RequestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 				Name: "noop_requests_total",
-			}, []string{"method", "status"}),
+			}, []string{"method", "route", "status"}),
 			RequestDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 				Name: "noop_request_duration_seconds",
-			}, []string{"method", "status"}),
+			}, []string{"method", "route", "status"}),
 		}
 	}
 
@@ -57,7 +57,7 @@ func NewMetrics(serviceName string, env ...string) *Metrics {
 			Name:      "requests_total",
 			Help:      "Total requests processed",
 		},
-		[]string{"method", "status"},
+		[]string{"method", "route", "status"},
 	)
 
 	requestDuration := prometheus.NewHistogramVec(
@@ -67,7 +67,7 @@ func NewMetrics(serviceName string, env ...string) *Metrics {
 			Help:      "Duration of requests in seconds",
 			Buckets:   prometheus.DefBuckets,
 		},
-		[]string{"method", "status"},
+		[]string{"method", "route", "status"},
 	)
 
 	reg.MustRegister(requestsTotal, requestDuration)
