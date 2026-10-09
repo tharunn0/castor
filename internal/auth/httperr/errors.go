@@ -37,6 +37,7 @@ var errorRegistry = []errorMapping{
 	{target: jwt.ErrInvalidSigningMethod, status: fiber.StatusUnauthorized},
 	{target: jwt.ErrEmptySecret, status: fiber.StatusInternalServerError},
 	{target: model.ErrInvalidCredentials, status: fiber.StatusUnauthorized},
+	{target: model.ErrCredentialRevoked, status: fiber.StatusUnauthorized},
 }
 
 // Translate converts an application domain error into an HTTP status code and client-safe message.

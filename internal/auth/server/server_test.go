@@ -47,6 +47,22 @@ func (m *mockAuthService) Login(ctx context.Context, req model.LoginRequest) (*m
 	return nil, errors.New("not implemented")
 }
 
+func (m *mockAuthService) CreateCredential(ctx context.Context, userID uuid.UUID, label string) (*model.S3Credential, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockAuthService) ListCredentials(ctx context.Context, userID uuid.UUID) ([]*model.S3Credential, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockAuthService) RevokeCredential(ctx context.Context, userID uuid.UUID, accessKeyID string) error {
+	return errors.New("not implemented")
+}
+
+func (m *mockAuthService) ValidateAccessKey(ctx context.Context, accessKeyID string) (*model.S3Credential, error) {
+	return nil, errors.New("not implemented")
+}
+
 func TestServer_HealthRoutes(t *testing.T) {
 	cfg := config.Config{
 		HTTPAddr: ":9095",
@@ -328,6 +344,9 @@ func TestServer_LogRoutes(t *testing.T) {
 		"/api/v1/dashboard",
 		"/api/v1/register",
 		"/api/v1/login",
+		"/api/v1/keys",
+		"/api/v1/keys/:key_id",
+		"/internal/v1/validate-key",
 	}
 
 	for _, expectedPath := range expectedPaths {

@@ -15,8 +15,15 @@ func RegisterRoutes(app *fiber.App, cfg config.Config, authHandler *handler.Auth
 	}
 
 	if authHandler != nil {
+		authMW := jwt.NewMiddleware(cfg.JWTSecret)
 		v1.Post("/register", authHandler.Register)
 		v1.Post("/login", authHandler.Login)
-		v1.Get("/dashboard", jwt.NewMiddleware(cfg.JWTSecret), authHandler.Dashboard)
+		v1.Get("/dashboard", authMW, authHandler.Dashboard)
+		v1.Post("/keys", authMW, authHandler.CreateKey)
+		v1.Get("/keys", authMW, authHandler.ListKeys)
+		v1.Delete("/keys/:key_id", authMW, authHandler.RevokeKey)
+
+		internal := app.Group("/internal/v1")
+		internal.Get("/validate-key", authHandler.ValidateKey)
 	}
 }

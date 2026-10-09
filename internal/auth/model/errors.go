@@ -15,4 +15,5 @@ var (
 	ErrInvalidLabel            = errors.New("invalid label: cannot exceed 64 characters")
 	ErrInvalidCredentialStatus = errors.New("invalid credential status: must be ACTIVE or REVOKED")
 	ErrInvalidCredentials      = errors.New("invalid username or password")
+	ErrCredentialRevoked       = errors.New("credential is revoked")
 )

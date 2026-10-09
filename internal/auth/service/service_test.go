@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 type mockUserRepo struct {
 	createUserFunc        func(ctx context.Context, input model.CreateUserInput) (*model.User, error)
 	getUserByUsernameFunc func(ctx context.Context, username string) (*model.User, error)
+	getUserByIDFunc       func(ctx context.Context, id uuid.UUID) (*model.User, error)
 }
 
 func (m *mockUserRepo) CreateUser(ctx context.Context, input model.CreateUserInput) (*model.User, error) {
@@ -26,7 +28,53 @@ func (m *mockUserRepo) CreateUser(ctx context.Context, input model.CreateUserInp
 }
 
 func (m *mockUserRepo) GetUserByID(ctx context.Context, id uuid.UUID) (*model.User, error) {
+	if m.getUserByIDFunc != nil {
+		return m.getUserByIDFunc(ctx, id)
+	}
 	return nil, repository.ErrNotImplemented
+}
+
+type mockCredentialRepo struct {
+	createCredentialFunc         func(ctx context.Context, input model.CreateCredentialInput) (*model.S3Credential, error)
+	getCredentialByAccessKeyFunc func(ctx context.Context, accessKeyID string) (*model.S3Credential, error)
+	listCredentialsByUserIDFunc  func(ctx context.Context, userID uuid.UUID) ([]*model.S3Credential, error)
+	updateCredentialStatusFunc   func(ctx context.Context, accessKeyID string, status model.CredentialStatus) error
+	deleteCredentialFunc         func(ctx context.Context, accessKeyID string) error
+}
+
+func (m *mockCredentialRepo) CreateCredential(ctx context.Context, input model.CreateCredentialInput) (*model.S3Credential, error) {
+	if m.createCredentialFunc != nil {
+		return m.createCredentialFunc(ctx, input)
+	}
+	return nil, repository.ErrNotImplemented
+}
+
+func (m *mockCredentialRepo) GetCredentialByAccessKey(ctx context.Context, accessKeyID string) (*model.S3Credential, error) {
+	if m.getCredentialByAccessKeyFunc != nil {
+		return m.getCredentialByAccessKeyFunc(ctx, accessKeyID)
+	}
+	return nil, repository.ErrNotImplemented
+}
+
+func (m *mockCredentialRepo) ListCredentialsByUserID(ctx context.Context, userID uuid.UUID) ([]*model.S3Credential, error) {
+	if m.listCredentialsByUserIDFunc != nil {
+		return m.listCredentialsByUserIDFunc(ctx, userID)
+	}
+	return nil, repository.ErrNotImplemented
+}
+
+func (m *mockCredentialRepo) UpdateCredentialStatus(ctx context.Context, accessKeyID string, status model.CredentialStatus) error {
+	if m.updateCredentialStatusFunc != nil {
+		return m.updateCredentialStatusFunc(ctx, accessKeyID, status)
+	}
+	return repository.ErrNotImplemented
+}
+
+func (m *mockCredentialRepo) DeleteCredential(ctx context.Context, accessKeyID string) error {
+	if m.deleteCredentialFunc != nil {
+		return m.deleteCredentialFunc(ctx, accessKeyID)
+	}
+	return repository.ErrNotImplemented
 }
 
 func (m *mockUserRepo) GetUserByUsername(ctx context.Context, username string) (*model.User, error) {
@@ -282,3 +330,304 @@ func TestService_Login(t *testing.T) {
 		}
 	})
 }
+
+func TestService_CreateCredential(t *testing.T) {
+	cfg := config.Config{}
+	userID := uuid.New()
+
+	t.Run("successful credential creation", func(t *testing.T) {
+		userRepo := &mockUserRepo{
+			getUserByIDFunc: func(ctx context.Context, id uuid.UUID) (*model.User, error) {
+				return &model.User{ID: id, Username: "testuser"}, nil
+			},
+		}
+
+		credRepo := &mockCredentialRepo{
+			createCredentialFunc: func(ctx context.Context, in model.CreateCredentialInput) (*model.S3Credential, error) {
+				return &model.S3Credential{
+					AccessKeyID:     in.AccessKeyID,
+					SecretAccessKey: in.SecretAccessKey,
+					UserID:          in.UserID,
+					Label:           in.Label,
+					Status:          in.Status,
+					CreatedAt:       time.Now().UTC(),
+				}, nil
+			},
+		}
+
+		svc := NewService(cfg, userRepo, credRepo)
+		cred, err := svc.CreateCredential(context.Background(), userID, "Test Laptop")
+		if err != nil {
+			t.Fatalf("unexpected error creating credential: %v", err)
+		}
+		if cred.UserID != userID {
+			t.Errorf("expected user ID %s, got %s", userID, cred.UserID)
+		}
+		if cred.Label != "Test Laptop" {
+			t.Errorf("expected label 'Test Laptop', got %s", cred.Label)
+		}
+		if cred.Status != model.StatusActive {
+			t.Errorf("expected status ACTIVE, got %s", cred.Status)
+		}
+		if cred.SecretAccessKey == "" {
+			t.Error("expected secret access key to be populated on creation")
+		}
+	})
+
+	t.Run("nil user id error", func(t *testing.T) {
+		svc := NewService(cfg, &mockUserRepo{}, &mockCredentialRepo{})
+		_, err := svc.CreateCredential(context.Background(), uuid.Nil, "label")
+		if !errors.Is(err, model.ErrInvalidUserID) {
+			t.Fatalf("expected ErrInvalidUserID, got %v", err)
+		}
+	})
+
+	t.Run("label too long error", func(t *testing.T) {
+		svc := NewService(cfg, &mockUserRepo{}, &mockCredentialRepo{})
+		longLabel := strings.Repeat("x", 65)
+		_, err := svc.CreateCredential(context.Background(), userID, longLabel)
+		if !errors.Is(err, model.ErrInvalidLabel) {
+			t.Fatalf("expected ErrInvalidLabel, got %v", err)
+		}
+	})
+
+	t.Run("user not found error", func(t *testing.T) {
+		userRepo := &mockUserRepo{
+			getUserByIDFunc: func(ctx context.Context, id uuid.UUID) (*model.User, error) {
+				return nil, repository.ErrUserNotFound
+			},
+		}
+		svc := NewService(cfg, userRepo, &mockCredentialRepo{})
+		_, err := svc.CreateCredential(context.Background(), userID, "label")
+		if !errors.Is(err, repository.ErrUserNotFound) {
+			t.Fatalf("expected ErrUserNotFound, got %v", err)
+		}
+	})
+
+	t.Run("nil credRepo error", func(t *testing.T) {
+		svc := NewService(cfg, &mockUserRepo{})
+		_, err := svc.CreateCredential(context.Background(), userID, "label")
+		if !errors.Is(err, repository.ErrNotImplemented) {
+			t.Fatalf("expected ErrNotImplemented, got %v", err)
+		}
+	})
+}
+
+func TestService_ListCredentials(t *testing.T) {
+	cfg := config.Config{}
+	userID := uuid.New()
+
+	t.Run("successful list sanitizes secret keys", func(t *testing.T) {
+		credRepo := &mockCredentialRepo{
+			listCredentialsByUserIDFunc: func(ctx context.Context, id uuid.UUID) ([]*model.S3Credential, error) {
+				return []*model.S3Credential{
+					{
+						AccessKeyID:     "AKIAKEYONE12345678",
+						SecretAccessKey: "supersecret1",
+						UserID:          id,
+						Status:          model.StatusActive,
+					},
+					{
+						AccessKeyID:     "AKIAKEYTWO12345678",
+						SecretAccessKey: "supersecret2",
+						UserID:          id,
+						Status:          model.StatusRevoked,
+					},
+				}, nil
+			},
+		}
+
+		svc := NewService(cfg, &mockUserRepo{}, credRepo)
+		creds, err := svc.ListCredentials(context.Background(), userID)
+		if err != nil {
+			t.Fatalf("unexpected error listing credentials: %v", err)
+		}
+		if len(creds) != 2 {
+			t.Fatalf("expected 2 credentials, got %d", len(creds))
+		}
+		for _, c := range creds {
+			if c.SecretAccessKey != "" {
+				t.Errorf("expected secret access key to be stripped, got %q", c.SecretAccessKey)
+			}
+		}
+	})
+
+	t.Run("nil user id error", func(t *testing.T) {
+		svc := NewService(cfg, &mockUserRepo{}, &mockCredentialRepo{})
+		_, err := svc.ListCredentials(context.Background(), uuid.Nil)
+		if !errors.Is(err, model.ErrInvalidUserID) {
+			t.Fatalf("expected ErrInvalidUserID, got %v", err)
+		}
+	})
+
+	t.Run("nil credRepo error", func(t *testing.T) {
+		svc := NewService(cfg, &mockUserRepo{})
+		_, err := svc.ListCredentials(context.Background(), userID)
+		if !errors.Is(err, repository.ErrNotImplemented) {
+			t.Fatalf("expected ErrNotImplemented, got %v", err)
+		}
+	})
+}
+
+func TestService_RevokeCredential(t *testing.T) {
+	cfg := config.Config{}
+	userID := uuid.New()
+	accessKey := "AKIAEXAMPLEKEY123456"
+
+	t.Run("successful revocation", func(t *testing.T) {
+		var updatedStatus model.CredentialStatus
+		credRepo := &mockCredentialRepo{
+			getCredentialByAccessKeyFunc: func(ctx context.Context, key string) (*model.S3Credential, error) {
+				return &model.S3Credential{
+					AccessKeyID: key,
+					UserID:      userID,
+					Status:      model.StatusActive,
+				}, nil
+			},
+			updateCredentialStatusFunc: func(ctx context.Context, key string, status model.CredentialStatus) error {
+				updatedStatus = status
+				return nil
+			},
+		}
+
+		svc := NewService(cfg, &mockUserRepo{}, credRepo)
+		err := svc.RevokeCredential(context.Background(), userID, accessKey)
+		if err != nil {
+			t.Fatalf("unexpected error revoking credential: %v", err)
+		}
+		if updatedStatus != model.StatusRevoked {
+			t.Errorf("expected status %s, got %s", model.StatusRevoked, updatedStatus)
+		}
+	})
+
+	t.Run("ownership mismatch error", func(t *testing.T) {
+		otherUser := uuid.New()
+		credRepo := &mockCredentialRepo{
+			getCredentialByAccessKeyFunc: func(ctx context.Context, key string) (*model.S3Credential, error) {
+				return &model.S3Credential{
+					AccessKeyID: key,
+					UserID:      otherUser,
+					Status:      model.StatusActive,
+				}, nil
+			},
+		}
+
+		svc := NewService(cfg, &mockUserRepo{}, credRepo)
+		err := svc.RevokeCredential(context.Background(), userID, accessKey)
+		if !errors.Is(err, repository.ErrCredentialNotFound) {
+			t.Fatalf("expected ErrCredentialNotFound on ownership mismatch, got %v", err)
+		}
+	})
+
+	t.Run("credential not found error", func(t *testing.T) {
+		credRepo := &mockCredentialRepo{
+			getCredentialByAccessKeyFunc: func(ctx context.Context, key string) (*model.S3Credential, error) {
+				return nil, repository.ErrCredentialNotFound
+			},
+		}
+
+		svc := NewService(cfg, &mockUserRepo{}, credRepo)
+		err := svc.RevokeCredential(context.Background(), userID, accessKey)
+		if !errors.Is(err, repository.ErrCredentialNotFound) {
+			t.Fatalf("expected ErrCredentialNotFound, got %v", err)
+		}
+	})
+
+	t.Run("nil user id error", func(t *testing.T) {
+		svc := NewService(cfg, &mockUserRepo{}, &mockCredentialRepo{})
+		err := svc.RevokeCredential(context.Background(), uuid.Nil, accessKey)
+		if !errors.Is(err, model.ErrInvalidUserID) {
+			t.Fatalf("expected ErrInvalidUserID, got %v", err)
+		}
+	})
+
+	t.Run("empty access key error", func(t *testing.T) {
+		svc := NewService(cfg, &mockUserRepo{}, &mockCredentialRepo{})
+		err := svc.RevokeCredential(context.Background(), userID, "")
+		if !errors.Is(err, model.ErrInvalidAccessKeyID) {
+			t.Fatalf("expected ErrInvalidAccessKeyID, got %v", err)
+		}
+	})
+
+	t.Run("nil credRepo error", func(t *testing.T) {
+		svc := NewService(cfg, &mockUserRepo{})
+		err := svc.RevokeCredential(context.Background(), userID, accessKey)
+		if !errors.Is(err, repository.ErrNotImplemented) {
+			t.Fatalf("expected ErrNotImplemented, got %v", err)
+		}
+	})
+}
+
+func TestService_ValidateAccessKey(t *testing.T) {
+	cfg := config.Config{}
+	accessKey := "AKIAVALIDKEY12345678"
+
+	t.Run("successful validation of active credential", func(t *testing.T) {
+		credRepo := &mockCredentialRepo{
+			getCredentialByAccessKeyFunc: func(ctx context.Context, key string) (*model.S3Credential, error) {
+				return &model.S3Credential{
+					AccessKeyID:     key,
+					SecretAccessKey: "secret",
+					Status:          model.StatusActive,
+				}, nil
+			},
+		}
+
+		svc := NewService(cfg, &mockUserRepo{}, credRepo)
+		cred, err := svc.ValidateAccessKey(context.Background(), accessKey)
+		if err != nil {
+			t.Fatalf("unexpected error validating active key: %v", err)
+		}
+		if cred.AccessKeyID != accessKey {
+			t.Errorf("expected access key %s, got %s", accessKey, cred.AccessKeyID)
+		}
+	})
+
+	t.Run("revoked credential error", func(t *testing.T) {
+		credRepo := &mockCredentialRepo{
+			getCredentialByAccessKeyFunc: func(ctx context.Context, key string) (*model.S3Credential, error) {
+				return &model.S3Credential{
+					AccessKeyID: key,
+					Status:      model.StatusRevoked,
+				}, nil
+			},
+		}
+
+		svc := NewService(cfg, &mockUserRepo{}, credRepo)
+		_, err := svc.ValidateAccessKey(context.Background(), accessKey)
+		if !errors.Is(err, model.ErrCredentialRevoked) {
+			t.Fatalf("expected ErrCredentialRevoked, got %v", err)
+		}
+	})
+
+	t.Run("not found credential error", func(t *testing.T) {
+		credRepo := &mockCredentialRepo{
+			getCredentialByAccessKeyFunc: func(ctx context.Context, key string) (*model.S3Credential, error) {
+				return nil, repository.ErrCredentialNotFound
+			},
+		}
+
+		svc := NewService(cfg, &mockUserRepo{}, credRepo)
+		_, err := svc.ValidateAccessKey(context.Background(), accessKey)
+		if !errors.Is(err, repository.ErrCredentialNotFound) {
+			t.Fatalf("expected ErrCredentialNotFound, got %v", err)
+		}
+	})
+
+	t.Run("empty access key error", func(t *testing.T) {
+		svc := NewService(cfg, &mockUserRepo{}, &mockCredentialRepo{})
+		_, err := svc.ValidateAccessKey(context.Background(), "")
+		if !errors.Is(err, model.ErrInvalidAccessKeyID) {
+			t.Fatalf("expected ErrInvalidAccessKeyID, got %v", err)
+		}
+	})
+
+	t.Run("nil credRepo error", func(t *testing.T) {
+		svc := NewService(cfg, &mockUserRepo{})
+		_, err := svc.ValidateAccessKey(context.Background(), accessKey)
+		if !errors.Is(err, repository.ErrNotImplemented) {
+			t.Fatalf("expected ErrNotImplemented, got %v", err)
+		}
+	})
+}
+

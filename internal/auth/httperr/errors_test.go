@@ -76,6 +76,12 @@ func TestTranslate(t *testing.T) {
 			expectedMsg:    model.ErrInvalidCredentials.Error(),
 		},
 		{
+			name:           "credential revoked error",
+			err:            model.ErrCredentialRevoked,
+			expectedStatus: fiber.StatusUnauthorized,
+			expectedMsg:    model.ErrCredentialRevoked.Error(),
+		},
+		{
 			name:           "unmapped internal server error",
 			err:            errors.New("db connection failure"),
 			expectedStatus: fiber.StatusInternalServerError,

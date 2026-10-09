@@ -2,6 +2,7 @@ package handler
 
 import (
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 	"github.com/tharunn0/castor/internal/auth/jwt"
 	"github.com/tharunn0/castor/internal/auth/model"
 	"github.com/tharunn0/castor/internal/auth/service"
@@ -24,10 +25,18 @@ func (h *AuthHandler) RegisterRoutes(app *fiber.App, jwtSecret ...string) {
 		secret = jwtSecret[0]
 	}
 	if secret != "" {
-		app.Get("/api/v1/dashboard", jwt.NewMiddleware(secret), h.Dashboard)
+		mw := jwt.NewMiddleware(secret)
+		app.Get("/api/v1/dashboard", mw, h.Dashboard)
+		app.Post("/api/v1/keys", mw, h.CreateKey)
+		app.Get("/api/v1/keys", mw, h.ListKeys)
+		app.Delete("/api/v1/keys/:key_id", mw, h.RevokeKey)
 	} else {
 		app.Get("/api/v1/dashboard", h.Dashboard)
+		app.Post("/api/v1/keys", h.CreateKey)
+		app.Get("/api/v1/keys", h.ListKeys)
+		app.Delete("/api/v1/keys/:key_id", h.RevokeKey)
 	}
+	app.Get("/internal/v1/validate-key", h.ValidateKey)
 }
 
 func (h *AuthHandler) Register(c fiber.Ctx) error {
@@ -85,4 +94,72 @@ func (h *AuthHandler) Dashboard(c fiber.Ctx) error {
 			"storage_used":   "0 B",
 		},
 	})
+}
+
+func (h *AuthHandler) CreateKey(c fiber.Ctx) error {
+	userID, ok := jwt.GetUserID(c)
+	if !ok || userID == uuid.Nil {
+		return fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
+	}
+
+	var req struct {
+		Label string `json:"label"`
+	}
+	_ = c.Bind().JSON(&req)
+
+	cred, err := h.svc.CreateCredential(c.Context(), userID, req.Label)
+	if err != nil {
+		return err
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(cred)
+}
+
+func (h *AuthHandler) ListKeys(c fiber.Ctx) error {
+	userID, ok := jwt.GetUserID(c)
+	if !ok || userID == uuid.Nil {
+		return fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
+	}
+
+	creds, err := h.svc.ListCredentials(c.Context(), userID)
+	if err != nil {
+		return err
+	}
+
+	return c.Status(fiber.StatusOK).JSON(creds)
+}
+
+func (h *AuthHandler) RevokeKey(c fiber.Ctx) error {
+	userID, ok := jwt.GetUserID(c)
+	if !ok || userID == uuid.Nil {
+		return fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
+	}
+
+	keyID := c.Params("key_id")
+	if keyID == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "missing key_id parameter")
+	}
+
+	if err := h.svc.RevokeCredential(c.Context(), userID, keyID); err != nil {
+		return err
+	}
+
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func (h *AuthHandler) ValidateKey(c fiber.Ctx) error {
+	accessKey := c.Query("access_key_id")
+	if accessKey == "" {
+		accessKey = c.Get("X-Access-Key-ID")
+	}
+	if accessKey == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "missing access_key_id parameter")
+	}
+
+	cred, err := h.svc.ValidateAccessKey(c.Context(), accessKey)
+	if err != nil {
+		return err
+	}
+
+	return c.Status(fiber.StatusOK).JSON(cred)
 }
