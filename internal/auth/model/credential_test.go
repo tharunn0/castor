@@ -226,3 +226,66 @@ func TestS3Credential_Validate(t *testing.T) {
 		})
 	}
 }
+
+func TestGenerateAccessKeyID(t *testing.T) {
+	seen := make(map[string]bool)
+	for _ = range 100 {
+		key, err := GenerateAccessKeyID()
+		if err != nil {
+			t.Fatalf("unexpected error generating access key id: %v", err)
+		}
+		if len(key) != 20 {
+			t.Fatalf("expected key length 20, got %d (%s)", len(key), key)
+		}
+		if !strings.HasPrefix(key, "AKIA") {
+			t.Fatalf("expected key to start with AKIA, got %s", key)
+		}
+		if err := validateAccessKeyID(key); err != nil {
+			t.Fatalf("generated key failed validation: %v", err)
+		}
+		if seen[key] {
+			t.Fatalf("duplicate access key generated: %s", key)
+		}
+		seen[key] = true
+	}
+}
+
+func TestGenerateSecretAccessKey(t *testing.T) {
+	seen := make(map[string]bool)
+	for _ = range 100 {
+		secret, err := GenerateSecretAccessKey()
+		if err != nil {
+			t.Fatalf("unexpected error generating secret access key: %v", err)
+		}
+		if len(secret) != 40 {
+			t.Fatalf("expected secret length 40, got %d (%s)", len(secret), secret)
+		}
+		if err := validateSecretAccessKey(secret); err != nil {
+			t.Fatalf("generated secret failed validation: %v", err)
+		}
+		if seen[secret] {
+			t.Fatalf("duplicate secret key generated: %s", secret)
+		}
+		seen[secret] = true
+	}
+}
+
+func TestGenerateCredentials(t *testing.T) {
+	accessKey, secretKey, err := GenerateCredentials()
+	if err != nil {
+		t.Fatalf("unexpected error generating credentials: %v", err)
+	}
+
+	input := CreateCredentialInput{
+		AccessKeyID:     accessKey,
+		SecretAccessKey: secretKey,
+		UserID:          uuid.New(),
+		Label:           "Generated Credential",
+		Status:          StatusActive,
+	}
+
+	if err := input.Validate(); err != nil {
+		t.Fatalf("expected generated credentials to pass input validation, got: %v", err)
+	}
+}
+

@@ -1,6 +1,8 @@
 package model
 
 import (
+	"crypto/rand"
+	"math/big"
 	"regexp"
 	"time"
 
@@ -102,4 +104,52 @@ func validateLabel(label string) error {
 		return ErrInvalidLabel
 	}
 	return nil
+}
+
+const (
+	accessKeyPrefix   = "AKIA"
+	accessKeyLength   = 20
+	secretKeyLength   = 40
+	accessKeyAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	secretKeyAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+)
+
+func GenerateAccessKeyID() (string, error) {
+	suffixLen := accessKeyLength - len(accessKeyPrefix)
+	result := make([]byte, accessKeyLength)
+	copy(result, accessKeyPrefix)
+	max := big.NewInt(int64(len(accessKeyAlphabet)))
+	for i := range suffixLen {
+		n, err := rand.Int(rand.Reader, max)
+		if err != nil {
+			return "", err
+		}
+		result[len(accessKeyPrefix)+i] = accessKeyAlphabet[n.Int64()]
+	}
+	return string(result), nil
+}
+
+func GenerateSecretAccessKey() (string, error) {
+	result := make([]byte, secretKeyLength)
+	max := big.NewInt(int64(len(secretKeyAlphabet)))
+	for i := range secretKeyLength {
+		n, err := rand.Int(rand.Reader, max)
+		if err != nil {
+			return "", err
+		}
+		result[i] = secretKeyAlphabet[n.Int64()]
+	}
+	return string(result), nil
+}
+
+func GenerateCredentials() (string, string, error) {
+	accessKey, err := GenerateAccessKeyID()
+	if err != nil {
+		return "", "", err
+	}
+	secretKey, err := GenerateSecretAccessKey()
+	if err != nil {
+		return "", "", err
+	}
+	return accessKey, secretKey, nil
 }
