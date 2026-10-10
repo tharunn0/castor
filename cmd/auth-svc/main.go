@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/exaring/otelpgx"
 	"github.com/tharunn0/castor/internal/auth/config"
 	"github.com/tharunn0/castor/internal/auth/database"
 	"github.com/tharunn0/castor/internal/auth/handler"
@@ -42,7 +43,9 @@ func main() {
 		"http_addr", cfg.HTTPAddr,
 	)
 
-	pool, err := database.NewPool(context.Background(), cfg.DatabaseURL)
+	pool, err := database.NewPool(context.Background(), cfg.DatabaseURL,
+		otelpgx.WithTracerProvider(tel.TracerProvider),
+	)
 	if err != nil {
 		logger.Error("failed to initialize postgres pool", "error", err)
 		os.Exit(1)
