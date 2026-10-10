@@ -13,6 +13,10 @@ import (
 	"github.com/tharunn0/castor/internal/auth/jwt"
 	"github.com/tharunn0/castor/internal/auth/model"
 	"github.com/tharunn0/castor/internal/auth/repository"
+	authtel "github.com/tharunn0/castor/internal/auth/telemetry"
+	"github.com/tharunn0/castor/internal/telemetry"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -26,24 +30,20 @@ type AuthService interface {
 }
 
 type Service struct {
-	cfg      config.Config
-	userRepo repository.UserRepository
-	credRepo repository.CredentialRepository
-	logger   *slog.Logger
+	cfg     config.Config
+	repo    repository.Repository
+	logger  *slog.Logger
+	tracer  trace.Tracer
+	metrics *authtel.AuthMetrics
 }
 
-func NewService(cfg config.Config, userRepo repository.UserRepository, credRepos ...repository.CredentialRepository) *Service {
-	var credRepo repository.CredentialRepository
-	if len(credRepos) > 0 {
-		credRepo = credRepos[0]
-	} else if cr, ok := userRepo.(repository.CredentialRepository); ok {
-		credRepo = cr
-	}
+func NewService(cfg config.Config, repo repository.Repository) *Service {
 	return &Service{
-		cfg:      cfg,
-		userRepo: userRepo,
-		credRepo: credRepo,
-		logger:   slog.Default(),
+		cfg:     cfg,
+		repo:    repo,
+		logger:  slog.Default(),
+		tracer:  otel.GetTracerProvider().Tracer("auth-service"),
+		metrics: authtel.NewAuthMetrics(telemetry.DefaultMetrics()),
 	}
 }
 
@@ -54,7 +54,22 @@ func (s *Service) WithLogger(l *slog.Logger) *Service {
 	return s
 }
 
+func (s *Service) WithTracer(tr trace.Tracer) *Service {
+	if tr != nil {
+		s.tracer = tr
+	}
+	return s
+}
+
+func (s *Service) WithMetrics(m *authtel.AuthMetrics) *Service {
+	s.metrics = m
+	return s
+}
+
 func (s *Service) Register(ctx context.Context, req model.RegisterRequest) (*model.RegisterResponse, error) {
+	ctx, span := s.tracer.Start(ctx, "auth.register")
+	defer span.End()
+
 	if err := req.Validate(); err != nil {
 		return nil, err
 	}
@@ -69,12 +84,16 @@ func (s *Service) Register(ctx context.Context, req model.RegisterRequest) (*mod
 		role = model.RoleAdmin
 	}
 
+	hashCtx := ctx
+	hashCtx, hashSpan := s.tracer.Start(ctx, "auth.hash_password")
+
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), 12)
 	if err != nil {
 		return nil, fmt.Errorf("hash password: %w", err)
 	}
+	hashSpan.End()
 
-	user, err := s.userRepo.CreateUser(ctx, model.CreateUserInput{
+	user, err := s.repo.CreateUser(hashCtx, model.CreateUserInput{
 		Username:     req.Username,
 		Email:        req.Email,
 		PasswordHash: string(hash),
@@ -94,32 +113,44 @@ func (s *Service) Register(ctx context.Context, req model.RegisterRequest) (*mod
 }
 
 func (s *Service) Login(ctx context.Context, req model.LoginRequest) (*model.LoginResponse, error) {
+	ctx, span := s.tracer.Start(ctx, "auth.login")
+	defer span.End()
+
 	if err := req.Validate(); err != nil {
+		s.metrics.LoginAttemptsTotal.WithLabelValues("failure").Inc()
 		return nil, err
 	}
 
-	user, err := s.userRepo.GetUserByUsername(ctx, req.Username)
+	user, err := s.repo.GetUserByUsername(ctx, req.Username)
 	if err != nil {
+		s.metrics.LoginAttemptsTotal.WithLabelValues("failure").Inc()
 		if errors.Is(err, repository.ErrUserNotFound) {
 			return nil, model.ErrInvalidCredentials
 		}
 		return nil, err
 	}
 
+	cmpCtx := ctx
+	cmpCtx, cmpSpan := s.tracer.Start(ctx, "auth.verify_password")
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		s.metrics.LoginAttemptsTotal.WithLabelValues("failure").Inc()
 		return nil, model.ErrInvalidCredentials
 	}
+	cmpSpan.End()
 
 	ttl := s.cfg.JWTExpiry
 	if ttl <= 0 {
 		ttl = 24 * time.Hour
 	}
 
-	s.logger.Debug("jwt created with duration", "ttl", ttl)
+	s.logger.DebugContext(cmpCtx, "jwt created with duration", "ttl", ttl)
 	token, err := jwt.GenerateToken(user.ID, user.Username, user.Role, s.cfg.JWTSecret, ttl)
 	if err != nil {
+		s.metrics.LoginAttemptsTotal.WithLabelValues("failure").Inc()
 		return nil, fmt.Errorf("generate token: %w", err)
 	}
+
+	s.metrics.LoginAttemptsTotal.WithLabelValues("success").Inc()
 
 	expiresAt := time.Now().UTC().Add(ttl)
 
@@ -134,9 +165,9 @@ func (s *Service) Login(ctx context.Context, req model.LoginRequest) (*model.Log
 }
 
 func (s *Service) CreateCredential(ctx context.Context, userID uuid.UUID, label string) (*model.S3Credential, error) {
-	if s.credRepo == nil {
-		return nil, repository.ErrNotImplemented
-	}
+	ctx, span := s.tracer.Start(ctx, "auth.create_credential")
+	defer span.End()
+
 	if userID == uuid.Nil {
 		if ctxUserID, ok := authctx.UserID(ctx); ok && ctxUserID != uuid.Nil {
 			userID = ctxUserID
@@ -148,7 +179,7 @@ func (s *Service) CreateCredential(ctx context.Context, userID uuid.UUID, label 
 		return nil, model.ErrInvalidLabel
 	}
 
-	if _, err := s.userRepo.GetUserByID(ctx, userID); err != nil {
+	if _, err := s.repo.GetUserByID(ctx, userID); err != nil {
 		return nil, err
 	}
 
@@ -165,13 +196,20 @@ func (s *Service) CreateCredential(ctx context.Context, userID uuid.UUID, label 
 		Status:          model.StatusActive,
 	}
 
-	return s.credRepo.CreateCredential(ctx, input)
+	cred, err := s.repo.CreateCredential(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+
+	s.metrics.KeysCreatedTotal.Inc()
+
+	return cred, nil
 }
 
 func (s *Service) ListCredentials(ctx context.Context, userID uuid.UUID) ([]*model.S3Credential, error) {
-	if s.credRepo == nil {
-		return nil, repository.ErrNotImplemented
-	}
+	ctx, span := s.tracer.Start(ctx, "auth.list_credentials")
+	defer span.End()
+
 	if userID == uuid.Nil {
 		if ctxUserID, ok := authctx.UserID(ctx); ok && ctxUserID != uuid.Nil {
 			userID = ctxUserID
@@ -180,7 +218,7 @@ func (s *Service) ListCredentials(ctx context.Context, userID uuid.UUID) ([]*mod
 		}
 	}
 
-	creds, err := s.credRepo.ListCredentialsByUserID(ctx, userID)
+	creds, err := s.repo.ListCredentialsByUserID(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -193,9 +231,9 @@ func (s *Service) ListCredentials(ctx context.Context, userID uuid.UUID) ([]*mod
 }
 
 func (s *Service) RevokeCredential(ctx context.Context, userID uuid.UUID, accessKeyID string) error {
-	if s.credRepo == nil {
-		return repository.ErrNotImplemented
-	}
+	ctx, span := s.tracer.Start(ctx, "auth.revoke_credential")
+	defer span.End()
+
 	if userID == uuid.Nil {
 		if ctxUserID, ok := authctx.UserID(ctx); ok && ctxUserID != uuid.Nil {
 			userID = ctxUserID
@@ -207,7 +245,7 @@ func (s *Service) RevokeCredential(ctx context.Context, userID uuid.UUID, access
 		return model.ErrInvalidAccessKeyID
 	}
 
-	cred, err := s.credRepo.GetCredentialByAccessKey(ctx, accessKeyID)
+	cred, err := s.repo.GetCredentialByAccessKey(ctx, accessKeyID)
 	if err != nil {
 		return err
 	}
@@ -216,25 +254,41 @@ func (s *Service) RevokeCredential(ctx context.Context, userID uuid.UUID, access
 		return repository.ErrCredentialNotFound
 	}
 
-	return s.credRepo.UpdateCredentialStatus(ctx, accessKeyID, model.StatusRevoked)
+	if err := s.repo.UpdateCredentialStatus(ctx, accessKeyID, model.StatusRevoked); err != nil {
+		return err
+	}
+
+	s.metrics.KeysRevokedTotal.Inc()
+
+	return nil
 }
 
 func (s *Service) ValidateAccessKey(ctx context.Context, accessKeyID string) (*model.S3Credential, error) {
-	if s.credRepo == nil {
-		return nil, repository.ErrNotImplemented
-	}
+	start := time.Now()
+	ctx, span := s.tracer.Start(ctx, "auth.validate_access_key")
+	defer span.End()
+
+	defer func() {
+		s.metrics.KeyValidationLatency.Observe(time.Since(start).Seconds())
+	}()
+
 	if accessKeyID == "" {
+		s.metrics.KeyValidationsTotal.WithLabelValues("invalid").Inc()
 		return nil, model.ErrInvalidAccessKeyID
 	}
 
-	cred, err := s.credRepo.GetCredentialByAccessKey(ctx, accessKeyID)
+	cred, err := s.repo.GetCredentialByAccessKey(ctx, accessKeyID)
 	if err != nil {
+		s.metrics.KeyValidationsTotal.WithLabelValues("invalid").Inc()
 		return nil, err
 	}
 
 	if cred.Status != model.StatusActive {
+		s.metrics.KeyValidationsTotal.WithLabelValues("revoked").Inc()
 		return nil, model.ErrCredentialRevoked
 	}
+
+	s.metrics.KeyValidationsTotal.WithLabelValues("valid").Inc()
 
 	return cred, nil
 }

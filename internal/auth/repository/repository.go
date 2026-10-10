@@ -9,11 +9,11 @@ import (
 )
 
 var (
-	ErrUserNotFound           = errors.New("user not found")
+	ErrUserNotFound            = errors.New("user not found")
 	ErrUserAlreadyExists       = errors.New("user already exists")
-	ErrCredentialNotFound     = errors.New("credential not found")
+	ErrCredentialNotFound      = errors.New("credential not found")
 	ErrCredentialAlreadyExists = errors.New("credential already exists")
-	ErrNotImplemented         = errors.New("not implemented")
+	ErrNotImplemented          = errors.New("not implemented")
 )
 
 type UserRepository interface {

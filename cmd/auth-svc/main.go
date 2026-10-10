@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -15,11 +16,22 @@ import (
 	"github.com/tharunn0/castor/internal/auth/repository"
 	"github.com/tharunn0/castor/internal/auth/server"
 	"github.com/tharunn0/castor/internal/auth/service"
+	authtel "github.com/tharunn0/castor/internal/auth/telemetry"
 	"github.com/tharunn0/castor/internal/telemetry"
 )
 
 func main() {
-	logger := telemetry.NewLogger()
+	ctx := context.Background()
+	tel, err := telemetry.Init(ctx, "auth-svc")
+	if err != nil {
+		slog.Error("failed to initialize telemetry", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		_ = tel.Shutdown(context.Background())
+	}()
+
+	logger := tel.Logger
 	cfg, err := config.Load()
 	if err != nil {
 		logger.Error("failed to load configuration", "error", err)
@@ -43,12 +55,21 @@ func main() {
 		logger.Info("connected to postgres database successfully")
 	}
 
+	authMetrics := authtel.NewAuthMetrics(tel.Metrics)
+
 	repo := repository.NewPostgresRepository(pool)
-	svc := service.NewService(cfg, repo).WithLogger(logger)
+	svc := service.NewService(cfg, repo).
+		WithLogger(logger).
+		WithTracer(tel.Tracer).
+		WithMetrics(authMetrics)
+
 	authHandler := handler.NewAuthHandler(svc)
 	healthHandler := handler.NewHealthHandler(cfg, repo)
 
-	srv := server.New(cfg, authHandler, healthHandler, logger)
+	srv := server.New(cfg, authHandler, healthHandler,
+		server.WithLogger(logger),
+		server.WithTelemetry(tel),
+	)
 
 	go func() {
 		logger.Info("auth HTTP server listening", "addr", cfg.HTTPAddr)

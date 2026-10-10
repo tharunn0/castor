@@ -5,9 +5,12 @@ import (
 	"github.com/tharunn0/castor/internal/auth/config"
 	"github.com/tharunn0/castor/internal/auth/handler"
 	"github.com/tharunn0/castor/internal/auth/jwt"
+	"github.com/tharunn0/castor/internal/telemetry"
 )
 
-func RegisterRoutes(app *fiber.App, cfg config.Config, authHandler *handler.AuthHandler, healthHandler *handler.HealthHandler) {
+func RegisterRoutes(app *fiber.App, cfg config.Config, authHandler *handler.AuthHandler, healthHandler *handler.HealthHandler, telMetrics ...*telemetry.Metrics) {
+	app.Get("/metrics", telemetry.FiberPrometheusHandler(telMetrics...))
+
 	v1 := app.Group("/api/v1")
 
 	if healthHandler != nil {

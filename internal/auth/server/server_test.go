@@ -18,6 +18,7 @@ import (
 	"github.com/tharunn0/castor/internal/auth/handler"
 	"github.com/tharunn0/castor/internal/auth/jwt"
 	"github.com/tharunn0/castor/internal/auth/model"
+	"github.com/tharunn0/castor/internal/telemetry"
 )
 
 type mockPinger struct {
@@ -408,4 +409,26 @@ func TestServer_FormatEndpoint(t *testing.T) {
 	}
 }
 
+func TestServer_Telemetry(t *testing.T) {
+	cfg := config.Config{
+		HTTPAddr: ":9095",
+	}
 
+	tel, err := telemetry.Init(context.Background(), "auth-svc-test", "dev")
+	if err != nil {
+		t.Fatalf("failed to init telemetry: %v", err)
+	}
+	defer func() { _ = tel.Shutdown(context.Background()) }()
+
+	srv := New(cfg, nil, nil, WithTelemetry(tel))
+
+	// Verify /metrics endpoint exists and returns 200 OK
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	resp, err := srv.App().Test(req)
+	if err != nil {
+		t.Fatalf("request to /metrics failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200 for /metrics, got %d", resp.StatusCode)
+	}
+}

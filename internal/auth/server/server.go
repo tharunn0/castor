@@ -9,6 +9,7 @@ import (
 	"github.com/tharunn0/castor/internal/auth/config"
 	"github.com/tharunn0/castor/internal/auth/handler"
 	"github.com/tharunn0/castor/internal/auth/httperr"
+	"github.com/tharunn0/castor/internal/telemetry"
 )
 
 type Server struct {
@@ -17,26 +18,62 @@ type Server struct {
 	logger *slog.Logger
 }
 
-func New(cfg config.Config, authHandler *handler.AuthHandler, healthHandler *handler.HealthHandler, loggers ...*slog.Logger) *Server {
+type Option func(*serverOptions)
+
+type serverOptions struct {
+	logger    *slog.Logger
+	telemetry *telemetry.Telemetry
+}
+
+func WithLogger(l *slog.Logger) Option {
+	return func(o *serverOptions) {
+		o.logger = l
+	}
+}
+
+func WithTelemetry(tel *telemetry.Telemetry) Option {
+	return func(o *serverOptions) {
+		o.telemetry = tel
+	}
+}
+
+func New(cfg config.Config, authHandler *handler.AuthHandler, healthHandler *handler.HealthHandler, opts ...any) *Server {
+	var sOpts serverOptions
+	for _, opt := range opts {
+		switch v := opt.(type) {
+		case Option:
+			v(&sOpts)
+		case *slog.Logger:
+			sOpts.logger = v
+		case *telemetry.Telemetry:
+			sOpts.telemetry = v
+		}
+	}
+
 	app := fiber.New(fiber.Config{
 		ErrorHandler: httperr.ErrorHandler,
 	})
 
-	RegisterRoutes(app, cfg, authHandler, healthHandler)
-
-	var logger *slog.Logger
-	if len(loggers) > 0 {
-		logger = loggers[0]
+	if sOpts.telemetry != nil {
+		app.Use(telemetry.FiberMiddleware(telemetry.FiberConfig{
+			ServiceName: "auth-svc",
+			Tracer:      sOpts.telemetry.Tracer,
+			Metrics:     sOpts.telemetry.Metrics,
+			Logger:      sOpts.logger,
+		}))
+		RegisterRoutes(app, cfg, authHandler, healthHandler, sOpts.telemetry.Metrics)
+	} else {
+		RegisterRoutes(app, cfg, authHandler, healthHandler)
 	}
 
 	srv := &Server{
 		app:    app,
 		cfg:    cfg,
-		logger: logger,
+		logger: sOpts.logger,
 	}
 
-	if logger != nil {
-		srv.LogRoutes(logger)
+	if sOpts.logger != nil {
+		srv.LogRoutes(sOpts.logger)
 	}
 
 	return srv
@@ -94,4 +131,3 @@ func (s *Server) Shutdown() error {
 func (s *Server) ShutdownWithTimeout(timeout time.Duration) error {
 	return s.app.ShutdownWithTimeout(timeout)
 }
-

@@ -288,4 +288,3 @@ func TestGenerateCredentials(t *testing.T) {
 		t.Fatalf("expected generated credentials to pass input validation, got: %v", err)
 	}
 }
-

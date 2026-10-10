@@ -242,4 +242,3 @@ func TestMiddleware_RequestContext(t *testing.T) {
 		t.Fatalf("expected status 200, got %d", resp.StatusCode)
 	}
 }
-

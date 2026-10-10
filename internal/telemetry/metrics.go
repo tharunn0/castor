@@ -84,6 +84,19 @@ func NewMetrics(serviceName string, env ...string) *Metrics {
 	}
 }
 
+// Register registers custom collectors with the metric registry.
+func (m *Metrics) Register(collectors ...prometheus.Collector) error {
+	if m == nil || m.Registry == nil {
+		return nil
+	}
+	for _, c := range collectors {
+		if err := m.Registry.Register(c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func InitMetrics(serviceName string, env ...string) *Metrics {
 	defaultMetrics = NewMetrics(serviceName, env...)
 	return defaultMetrics

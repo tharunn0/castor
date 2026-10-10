@@ -358,4 +358,3 @@ func TestLoginRequest_Validate(t *testing.T) {
 		})
 	}
 }
-

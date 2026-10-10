@@ -9,6 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/tharunn0/castor/internal/auth/authctx"
 	"github.com/tharunn0/castor/internal/auth/model"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type contextKey struct{ name string }
@@ -93,6 +95,14 @@ func NewMiddlewareWithConfig(cfg MiddlewareConfig) fiber.Handler {
 			reqCtx = WithUserID(reqCtx, claims.UserID)
 			reqCtx = WithUserRole(reqCtx, claims.Role)
 			c.SetContext(reqCtx)
+
+			span := trace.SpanFromContext(reqCtx)
+			if span.SpanContext().IsValid() {
+				span.SetAttributes(
+					attribute.String("user.id", claims.UserID.String()),
+					attribute.String("user.role", string(claims.Role)),
+				)
+			}
 		}
 
 		return c.Next()

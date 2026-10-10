@@ -21,11 +21,11 @@ import (
 )
 
 type mockAuthService struct {
-	registerFunc         func(ctx context.Context, req model.RegisterRequest) (*model.RegisterResponse, error)
-	loginFunc            func(ctx context.Context, req model.LoginRequest) (*model.LoginResponse, error)
-	createCredentialFunc func(ctx context.Context, userID uuid.UUID, label string) (*model.S3Credential, error)
-	listCredentialsFunc  func(ctx context.Context, userID uuid.UUID) ([]*model.S3Credential, error)
-	revokeCredentialFunc func(ctx context.Context, userID uuid.UUID, accessKeyID string) error
+	registerFunc          func(ctx context.Context, req model.RegisterRequest) (*model.RegisterResponse, error)
+	loginFunc             func(ctx context.Context, req model.LoginRequest) (*model.LoginResponse, error)
+	createCredentialFunc  func(ctx context.Context, userID uuid.UUID, label string) (*model.S3Credential, error)
+	listCredentialsFunc   func(ctx context.Context, userID uuid.UUID) ([]*model.S3Credential, error)
+	revokeCredentialFunc  func(ctx context.Context, userID uuid.UUID, accessKeyID string) error
 	validateAccessKeyFunc func(ctx context.Context, accessKeyID string) (*model.S3Credential, error)
 }
 
