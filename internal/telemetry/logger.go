@@ -7,12 +7,6 @@ import (
 	"strings"
 )
 
-const (
-	EnvProd = "prod"
-	EnvDev  = "dev"
-	EnvOff  = "off"
-)
-
 func GetEnv() string {
 	for _, key := range []string{"ENV", "APP_ENV", "ENVIRONMENT"} {
 		if val := strings.TrimSpace(os.Getenv(key)); val != "" {
@@ -26,6 +20,10 @@ func NormalizeEnv(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "prod", "production":
 		return EnvProd
+	case "stage", "staging":
+		return EnvStage
+	case "test":
+		return EnvTest
 	case "off", "none", "disable", "disabled":
 		return EnvOff
 	default:
@@ -33,32 +31,35 @@ func NormalizeEnv(raw string) string {
 	}
 }
 
-func NewLogger(env ...string) *slog.Logger {
-	targetEnv := GetEnv()
-	if len(env) > 0 && strings.TrimSpace(env[0]) != "" {
-		targetEnv = NormalizeEnv(env[0])
-	}
-
+func NewLoggerWithConfig(cfg Config) *slog.Logger {
 	var handler slog.Handler
-	switch targetEnv {
-	case EnvProd:
-		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-			Level: slog.LevelInfo,
-		})
-	case EnvOff:
-		handler = slog.NewTextHandler(io.Discard, &slog.HandlerOptions{
-			Level: slog.LevelError,
-		})
-	default:
-		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-			Level: slog.LevelDebug,
-		})
+	opts := &slog.HandlerOptions{
+		Level:     cfg.LogLevel,
+		AddSource: cfg.LogAddSource,
 	}
 
-	return slog.New(handler)
+	if cfg.Env == EnvOff || !cfg.LogStdoutEnabled {
+		handler = slog.NewTextHandler(io.Discard, opts)
+	} else if cfg.LogFormat == LogFormatJSON {
+		handler = slog.NewJSONHandler(os.Stdout, opts)
+	} else {
+		handler = slog.NewTextHandler(os.Stdout, opts)
+	}
+
+	return slog.New(NewTraceContextHandler(handler))
 }
 
-// InitLogger initializes a new logger, sets it as the default slog logger, and returns it.
+func NewLogger(env ...string) *slog.Logger {
+	cfg := LoadConfig("", env...)
+	return NewLoggerWithConfig(cfg)
+}
+
+func InitLoggerWithConfig(cfg Config) *slog.Logger {
+	logger := NewLoggerWithConfig(cfg)
+	slog.SetDefault(logger)
+	return logger
+}
+
 func InitLogger(env ...string) *slog.Logger {
 	logger := NewLogger(env...)
 	slog.SetDefault(logger)

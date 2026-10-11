@@ -13,6 +13,9 @@ func TestNormalizeEnv(t *testing.T) {
 		{"prod", EnvProd},
 		{"PROD", EnvProd},
 		{"production", EnvProd},
+		{"stage", EnvStage},
+		{"STAGE", EnvStage},
+		{"staging", EnvStage},
 		{"off", EnvOff},
 		{"OFF", EnvOff},
 		{"none", EnvOff},
@@ -65,6 +68,12 @@ func TestNewLogger(t *testing.T) {
 	}
 	prodLogger.Info("test prod log")
 
+	stageLogger := NewLogger("stage")
+	if stageLogger == nil {
+		t.Fatal("expected non-nil stage logger")
+	}
+	stageLogger.Info("test stage log")
+
 	devLogger := NewLogger("dev")
 	if devLogger == nil {
 		t.Fatal("expected non-nil dev logger")
@@ -116,5 +125,71 @@ func TestTelemetry(t *testing.T) {
 	}
 
 	_, span := tel.Tracer.Start(ctx, "dev-span")
+	span.End()
+}
+
+func TestTelemetry_Stage(t *testing.T) {
+	ctx := context.Background()
+	tel, err := Init(ctx, "stage-svc", "stage")
+	if err != nil {
+		t.Fatalf("failed to init telemetry in stage: %v", err)
+	}
+	defer func() {
+		_ = tel.Shutdown(ctx)
+	}()
+
+	if tel.Logger == nil {
+		t.Fatal("expected non-nil logger in stage")
+	}
+	if tel.Tracer == nil {
+		t.Fatal("expected non-nil tracer in stage")
+	}
+
+	_, span := tel.Tracer.Start(ctx, "stage-span")
+	if !span.IsRecording() {
+		t.Error("expected recording span in stage")
+	}
+	span.End()
+}
+
+func TestTelemetry_Prod(t *testing.T) {
+	ctx := context.Background()
+	tel, err := Init(ctx, "prod-svc", "prod")
+	if err != nil {
+		t.Fatalf("failed to init telemetry in prod: %v", err)
+	}
+	defer func() {
+		_ = tel.Shutdown(ctx)
+	}()
+
+	if tel.Logger == nil {
+		t.Fatal("expected non-nil logger in prod")
+	}
+	if tel.Tracer == nil {
+		t.Fatal("expected non-nil tracer in prod")
+	}
+}
+
+func TestTelemetry_ExportersDisabled(t *testing.T) {
+	ctx := context.Background()
+	cfg := Config{
+		ServiceName:        "noop-exp-svc",
+		Env:                EnvDev,
+		TracingEnabled:     true,
+		TraceStdoutEnabled: false,
+		TraceOTLPEnabled:   false,
+	}
+
+	tp, shutdown, err := NewTracerProviderWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer func() { _ = shutdown(ctx) }()
+
+	tr := tp.Tracer("test")
+	_, span := tr.Start(ctx, "noop-span")
+	if span.IsRecording() {
+		t.Error("expected non-recording span when both exporters disabled")
+	}
 	span.End()
 }

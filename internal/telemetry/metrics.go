@@ -18,28 +18,23 @@ type Metrics struct {
 
 var defaultMetrics *Metrics
 
-func NewMetrics(serviceName string, env ...string) *Metrics {
-	targetEnv := GetEnv()
-	if len(env) > 0 && strings.TrimSpace(env[0]) != "" {
-		targetEnv = NormalizeEnv(env[0])
-	}
-
+func NewMetricsWithConfig(cfg Config) *Metrics {
 	reg := prometheus.NewRegistry()
 
-	if targetEnv == EnvOff {
+	if !cfg.MetricsEnabled || cfg.Env == EnvOff {
 		return &Metrics{
 			Registry: reg,
 			Handler:  http.NotFoundHandler(),
 			RequestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 				Name: "noop_requests_total",
-			}, []string{"method", "status"}),
+			}, []string{"method", "route", "status"}),
 			RequestDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 				Name: "noop_request_duration_seconds",
-			}, []string{"method", "status"}),
+			}, []string{"method", "route", "status"}),
 		}
 	}
 
-	namespace := strings.ReplaceAll(serviceName, "-", "_")
+	namespace := strings.ReplaceAll(cfg.ServiceName, "-", "_")
 	if namespace == "" {
 		namespace = "castor"
 	}
@@ -57,7 +52,7 @@ func NewMetrics(serviceName string, env ...string) *Metrics {
 			Name:      "requests_total",
 			Help:      "Total requests processed",
 		},
-		[]string{"method", "status"},
+		[]string{"method", "route", "status"},
 	)
 
 	requestDuration := prometheus.NewHistogramVec(
@@ -67,7 +62,7 @@ func NewMetrics(serviceName string, env ...string) *Metrics {
 			Help:      "Duration of requests in seconds",
 			Buckets:   prometheus.DefBuckets,
 		},
-		[]string{"method", "status"},
+		[]string{"method", "route", "status"},
 	)
 
 	reg.MustRegister(requestsTotal, requestDuration)
@@ -84,9 +79,32 @@ func NewMetrics(serviceName string, env ...string) *Metrics {
 	}
 }
 
-func InitMetrics(serviceName string, env ...string) *Metrics {
-	defaultMetrics = NewMetrics(serviceName, env...)
+// Register registers custom collectors with the metric registry.
+func (m *Metrics) Register(collectors ...prometheus.Collector) error {
+	if m == nil || m.Registry == nil {
+		return nil
+	}
+	for _, c := range collectors {
+		if err := m.Registry.Register(c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func NewMetrics(serviceName string, env ...string) *Metrics {
+	cfg := LoadConfig(serviceName, env...)
+	return NewMetricsWithConfig(cfg)
+}
+
+func InitMetricsWithConfig(cfg Config) *Metrics {
+	defaultMetrics = NewMetricsWithConfig(cfg)
 	return defaultMetrics
+}
+
+func InitMetrics(serviceName string, env ...string) *Metrics {
+	cfg := LoadConfig(serviceName, env...)
+	return InitMetricsWithConfig(cfg)
 }
 
 func DefaultMetrics() *Metrics {

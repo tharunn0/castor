@@ -1,0 +1,120 @@
+services:
+  # PostgreSQL Database for Auth Service
+  auth-db:
+    image: postgres:17-alpine
+    container_name: castor-auth-db
+    env_file:
+      - path: ../../.env
+        required: false
+      - path: .env
+        required: false
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-castor_auth}
+      - POSTGRES_USER=${POSTGRES_USER:-castor}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-castor123}
+      - PGDATA=${PGDATA:-/var/lib/postgresql/data/pgdata}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - auth-db-data:/var/lib/postgresql/data
+      - ../docker/init-auth-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-castor} -d ${POSTGRES_DB:-castor_auth}"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+    networks:
+      - castor-auth-net
+    restart: unless-stopped
+
+  # Auth Service
+  auth-svc:
+    build:
+      context: ../../
+      dockerfile: deploy/docker/Dockerfile.auth
+    image: castor-auth-svc:latest
+    container_name: castor-auth-svc
+    env_file:
+      - path: ../../.env
+        required: false
+      - path: .env
+        required: false
+    environment:
+      # App Environment
+      - APP_ENV=${APP_ENV:-dev}
+
+      # Observability
+      - LOG_LEVEL=${LOG_LEVEL:-info} # error, info, debug
+      - LOG_FORMAT=${LOG_FORMAT:-json} # text, json
+      - LOG_ADD_SOURCE=${LOG_ADD_SOURCE:-false} # true, false
+      - LOG_STDOUT_ENABLED=${LOG_STDOUT_ENABLED:-true} # true, false
+      - TRACING_ENABLED=${TRACING_ENABLED:-true} # true, false
+      - TRACE_STDOUT_ENABLED=${TRACE_STDOUT_ENABLED:-true} # true, false
+      - TRACE_OTLP_ENABLED=${TRACE_OTLP_ENABLED:-true} # true, false
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      - OTEL_EXPORTER_OTLP_INSECURE=${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      - TRACE_SAMPLER=${TRACE_SAMPLER:-always} # always, never, ratio, parent_based
+      - TRACE_SAMPLE_RATIO=${TRACE_SAMPLE_RATIO:-1.0} # 0.0 to 1.0
+      - METRICS_ENABLED=${METRICS_ENABLED:-true} # true, false
+
+      # HTTP Server
+      - AUTH_HTTP_ADDR=${AUTH_HTTP_ADDR:-:9095}
+      - AUTH_READ_TIMEOUT=${AUTH_READ_TIMEOUT:-10s}
+      - AUTH_WRITE_TIMEOUT=${AUTH_WRITE_TIMEOUT:-10s}
+      - AUTH_IDLE_TIMEOUT=${AUTH_IDLE_TIMEOUT:-120s}
+      - AUTH_SHUTDOWN_TIMEOUT=${AUTH_SHUTDOWN_TIMEOUT:-10s}
+
+      # Database Connection Pool
+      - AUTH_DATABASE_URL=${AUTH_DATABASE_URL:-postgres://${POSTGRES_USER:-castor}:${POSTGRES_PASSWORD:-castor123}@auth-db:5432/${POSTGRES_DB:-castor_auth}?sslmode=disable}
+      - AUTH_DB_MAX_CONNS=${AUTH_DB_MAX_CONNS:-25}
+      - AUTH_DB_MIN_CONNS=${AUTH_DB_MIN_CONNS:-5}
+      - AUTH_DB_MAX_CONN_LIFETIME=${AUTH_DB_MAX_CONN_LIFETIME:-1h}
+      - AUTH_DB_MAX_CONN_IDLE_TIME=${AUTH_DB_MAX_CONN_IDLE_TIME:-30m}
+      - AUTH_DB_HEALTH_CHECK_PERIOD=${AUTH_DB_HEALTH_CHECK_PERIOD:-1m}
+      - AUTH_DB_CONNECT_TIMEOUT=${AUTH_DB_CONNECT_TIMEOUT:-5s}
+
+      # Security & Key Management
+      - ADMIN_KEY=${ADMIN_KEY:-castor-cluster-admin-secret}
+      - AUTH_BCRYPT_COST=${AUTH_BCRYPT_COST:-12}
+      - AUTH_JWT_SECRET=${AUTH_JWT_SECRET:-castor-auth-jwt-super-secret-key-change-in-production}
+      - AUTH_JWT_EXPIRY=${AUTH_JWT_EXPIRY:-24h}
+    ports:
+      - "${AUTH_HTTP_PORT:-9095}:9095"
+    depends_on:
+      auth-db:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    networks:
+      - castor-auth-net
+    restart: unless-stopped
+
+  # OpenTelemetry Collector (Forwarding to Grafana Cloud)
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    container_name: castor-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    env_file:
+      - path: ../../.env
+        required: false
+      - path: .env
+        required: false
+    environment:
+      - GRAFANA_CLOUD_OTLP_ENDPOINT=${GRAFANA_CLOUD_OTLP_ENDPOINT:-https://otlp-gateway-prod-us-east-0.grafana.net/otlp}
+      - GRAFANA_CLOUD_INSTANCE_ID=${GRAFANA_CLOUD_INSTANCE_ID:-}
+      - GRAFANA_CLOUD_API_KEY=${GRAFANA_CLOUD_API_KEY:-}
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "${OTEL_COLLECTOR_GRPC_PORT:-4317}:4317" # OTLP gRPC receiver
+      - "${OTEL_COLLECTOR_HTTP_PORT:-4318}:4318" # OTLP HTTP receiver
+    networks:
+      - castor-auth-net
+    restart: unless-stopped
+
+volumes:
+  auth-db-data:
+
+networks:
+  castor-auth-net:
+    driver: bridge
