@@ -1,0 +1,62 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # Scrape Prometheus metrics directly from auth-svc /metrics endpoint
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: "auth-svc"
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["auth-svc:9095"]
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 75
+    spike_limit_percentage: 20
+
+extensions:
+  # HTTP Basic Auth using Grafana Cloud Instance ID and Access Token
+  basicauth/grafana_cloud:
+    client_auth:
+      username: "${GRAFANA_CLOUD_INSTANCE_ID}"
+      password: "${GRAFANA_CLOUD_API_KEY}"
+
+exporters:
+  # Push OTLP traces, metrics, and logs to Grafana Cloud OTLP gateway
+  otlphttp/grafana_cloud:
+    endpoint: "${GRAFANA_CLOUD_OTLP_ENDPOINT}"
+    auth:
+      authenticator: basicauth/grafana_cloud
+
+  # Local console logging for troubleshooting telemetry pipeline
+  debug:
+    verbosity: basic
+
+service:
+  extensions: [basicauth/grafana_cloud]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/grafana_cloud, debug]
+
+    metrics:
+      receivers: [otlp, prometheus]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/grafana_cloud, debug]
+
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/grafana_cloud, debug]

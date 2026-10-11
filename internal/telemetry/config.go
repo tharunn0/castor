@@ -8,10 +8,11 @@ import (
 )
 
 const (
-	EnvDev  = "dev"
-	EnvProd = "prod"
-	EnvTest = "test"
-	EnvOff  = "off"
+	EnvDev   = "dev"
+	EnvStage = "stage"
+	EnvProd  = "prod"
+	EnvTest  = "test"
+	EnvOff   = "off"
 )
 
 const (
@@ -27,15 +28,20 @@ const (
 )
 
 type Config struct {
-	ServiceName      string
-	Env              string
-	LogLevel         slog.Level
-	LogFormat        string
-	LogAddSource     bool
-	TracingEnabled   bool
-	TraceSampler     string
-	TraceSampleRatio float64
-	MetricsEnabled   bool
+	ServiceName        string
+	Env                string
+	LogLevel           slog.Level
+	LogFormat          string
+	LogAddSource       bool
+	LogStdoutEnabled   bool
+	TracingEnabled     bool
+	TraceStdoutEnabled bool
+	TraceOTLPEnabled   bool
+	OTLPEndpoint       string
+	OTLPInsecure       bool
+	TraceSampler       string
+	TraceSampleRatio   float64
+	MetricsEnabled     bool
 }
 
 func LoadConfig(serviceName string, envOverrides ...string) Config {
@@ -68,6 +74,12 @@ func LoadConfig(serviceName string, envOverrides ...string) Config {
 		}
 	}
 
+	if raw := getFirstEnv("LOG_STDOUT_ENABLED", "LOGGER_STDOUT_ENABLED"); raw != "" {
+		if val, ok := parseBool(raw); ok {
+			cfg.LogStdoutEnabled = val
+		}
+	}
+
 	if raw := getFirstEnv("OTEL_SDK_DISABLED"); raw != "" {
 		if disabled, ok := parseBool(raw); ok {
 			cfg.TracingEnabled = !disabled
@@ -76,6 +88,28 @@ func LoadConfig(serviceName string, envOverrides ...string) Config {
 	if raw := getFirstEnv("TRACING_ENABLED", "OTEL_TRACING_ENABLED"); raw != "" {
 		if val, ok := parseBool(raw); ok {
 			cfg.TracingEnabled = val
+		}
+	}
+
+	if raw := getFirstEnv("TRACE_STDOUT_ENABLED", "TRACE_EXPORTER_STDOUT"); raw != "" {
+		if val, ok := parseBool(raw); ok {
+			cfg.TraceStdoutEnabled = val
+		}
+	}
+
+	if raw := getFirstEnv("TRACE_OTLP_ENABLED", "TRACE_EXPORTER_OTLP", "OTEL_EXPORTER_OTLP_ENABLED"); raw != "" {
+		if val, ok := parseBool(raw); ok {
+			cfg.TraceOTLPEnabled = val
+		}
+	}
+
+	if raw := getFirstEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_OTLP_ENDPOINT"); raw != "" {
+		cfg.OTLPEndpoint = raw
+	}
+
+	if raw := getFirstEnv("OTEL_EXPORTER_OTLP_INSECURE"); raw != "" {
+		if val, ok := parseBool(raw); ok {
+			cfg.OTLPInsecure = val
 		}
 	}
 
@@ -116,47 +150,83 @@ func defaultConfigForEnv(env string) Config {
 	switch env {
 	case EnvProd:
 		return Config{
-			Env:              EnvProd,
-			LogLevel:         slog.LevelInfo,
-			LogFormat:        LogFormatJSON,
-			LogAddSource:     false,
-			TracingEnabled:   true,
-			TraceSampler:     TraceSamplerParentBased,
-			TraceSampleRatio: 0.05,
-			MetricsEnabled:   true,
+			Env:                EnvProd,
+			LogLevel:           slog.LevelInfo,
+			LogFormat:          LogFormatJSON,
+			LogAddSource:       false,
+			LogStdoutEnabled:   false,
+			TracingEnabled:     true,
+			TraceStdoutEnabled: false,
+			TraceOTLPEnabled:   true,
+			OTLPEndpoint:       "localhost:4317",
+			OTLPInsecure:       true,
+			TraceSampler:       TraceSamplerParentBased,
+			TraceSampleRatio:   0.05,
+			MetricsEnabled:     true,
+		}
+	case EnvStage:
+		return Config{
+			Env:                EnvStage,
+			LogLevel:           slog.LevelInfo,
+			LogFormat:          LogFormatJSON,
+			LogAddSource:       false,
+			LogStdoutEnabled:   true,
+			TracingEnabled:     true,
+			TraceStdoutEnabled: true,
+			TraceOTLPEnabled:   true,
+			OTLPEndpoint:       "localhost:4317",
+			OTLPInsecure:       true,
+			TraceSampler:       TraceSamplerAlways,
+			TraceSampleRatio:   1.0,
+			MetricsEnabled:     true,
 		}
 	case EnvTest:
 		return Config{
-			Env:              EnvTest,
-			LogLevel:         slog.LevelError,
-			LogFormat:        LogFormatText,
-			LogAddSource:     false,
-			TracingEnabled:   false,
-			TraceSampler:     TraceSamplerNever,
-			TraceSampleRatio: 0.0,
-			MetricsEnabled:   true,
+			Env:                EnvTest,
+			LogLevel:           slog.LevelError,
+			LogFormat:          LogFormatText,
+			LogAddSource:       false,
+			LogStdoutEnabled:   false,
+			TracingEnabled:     false,
+			TraceStdoutEnabled: false,
+			TraceOTLPEnabled:   false,
+			OTLPEndpoint:       "localhost:4317",
+			OTLPInsecure:       true,
+			TraceSampler:       TraceSamplerNever,
+			TraceSampleRatio:   0.0,
+			MetricsEnabled:     true,
 		}
 	case EnvOff:
 		return Config{
-			Env:              EnvOff,
-			LogLevel:         slog.LevelError,
-			LogFormat:        LogFormatText,
-			LogAddSource:     false,
-			TracingEnabled:   false,
-			TraceSampler:     TraceSamplerNever,
-			TraceSampleRatio: 0.0,
-			MetricsEnabled:   false,
+			Env:                EnvOff,
+			LogLevel:           slog.LevelError,
+			LogFormat:          LogFormatText,
+			LogAddSource:       false,
+			LogStdoutEnabled:   false,
+			TracingEnabled:     false,
+			TraceStdoutEnabled: false,
+			TraceOTLPEnabled:   false,
+			OTLPEndpoint:       "",
+			OTLPInsecure:       true,
+			TraceSampler:       TraceSamplerNever,
+			TraceSampleRatio:   0.0,
+			MetricsEnabled:     false,
 		}
 	default:
 		return Config{
-			Env:              EnvDev,
-			LogLevel:         slog.LevelDebug,
-			LogFormat:        LogFormatText,
-			LogAddSource:     false,
-			TracingEnabled:   true,
-			TraceSampler:     TraceSamplerAlways,
-			TraceSampleRatio: 1.0,
-			MetricsEnabled:   true,
+			Env:                EnvDev,
+			LogLevel:           slog.LevelDebug,
+			LogFormat:          LogFormatText,
+			LogAddSource:       false,
+			LogStdoutEnabled:   true,
+			TracingEnabled:     true,
+			TraceStdoutEnabled: true,
+			TraceOTLPEnabled:   false,
+			OTLPEndpoint:       "localhost:4317",
+			OTLPInsecure:       true,
+			TraceSampler:       TraceSamplerAlways,
+			TraceSampleRatio:   1.0,
+			MetricsEnabled:     true,
 		}
 	}
 }

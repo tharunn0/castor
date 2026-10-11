@@ -20,6 +20,8 @@ func NormalizeEnv(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "prod", "production":
 		return EnvProd
+	case "stage", "staging":
+		return EnvStage
 	case "test":
 		return EnvTest
 	case "off", "none", "disable", "disabled":
@@ -36,7 +38,7 @@ func NewLoggerWithConfig(cfg Config) *slog.Logger {
 		AddSource: cfg.LogAddSource,
 	}
 
-	if cfg.Env == EnvOff {
+	if cfg.Env == EnvOff || !cfg.LogStdoutEnabled {
 		handler = slog.NewTextHandler(io.Discard, opts)
 	} else if cfg.LogFormat == LogFormatJSON {
 		handler = slog.NewJSONHandler(os.Stdout, opts)

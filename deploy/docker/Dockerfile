@@ -74,3 +74,22 @@ USER nonroot:nonroot
 EXPOSE 9000 9001
 ENTRYPOINT ["/bin/gateway-svc"]
 
+# Build auth-svc binary
+FROM builder AS build-auth
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build \
+    -trimpath \
+    -ldflags="-s -w" \
+    -o /bin/auth-svc ./cmd/auth-svc
+
+# Final image: auth-svc
+FROM gcr.io/distroless/static-debian12:nonroot AS auth-svc
+WORKDIR /
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+COPY --from=build-auth /bin/auth-svc /bin/auth-svc
+USER nonroot:nonroot
+EXPOSE 9095
+ENTRYPOINT ["/bin/auth-svc"]
+

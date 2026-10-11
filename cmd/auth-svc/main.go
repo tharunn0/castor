@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/exaring/otelpgx"
+	"github.com/joho/godotenv"
 	"github.com/tharunn0/castor/internal/auth/config"
 	"github.com/tharunn0/castor/internal/auth/database"
 	"github.com/tharunn0/castor/internal/auth/handler"
@@ -22,6 +23,7 @@ import (
 )
 
 func main() {
+	_ = godotenv.Load()
 	ctx := context.Background()
 	tel, err := telemetry.Init(ctx, "auth-svc")
 	if err != nil {

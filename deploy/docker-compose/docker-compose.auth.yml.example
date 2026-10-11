@@ -44,10 +44,15 @@ services:
       - APP_ENV=${APP_ENV:-dev}
 
       # Observability
-      - LOG_LEVEL=${LOG_LEVEL:-debug} # error, info, debug
-      - LOG_FORMAT=${LOG_FORMAT:-text} # text, json
+      - LOG_LEVEL=${LOG_LEVEL:-info} # error, info, debug
+      - LOG_FORMAT=${LOG_FORMAT:-json} # text, json
       - LOG_ADD_SOURCE=${LOG_ADD_SOURCE:-false} # true, false
+      - LOG_STDOUT_ENABLED=${LOG_STDOUT_ENABLED:-true} # true, false
       - TRACING_ENABLED=${TRACING_ENABLED:-true} # true, false
+      - TRACE_STDOUT_ENABLED=${TRACE_STDOUT_ENABLED:-true} # true, false
+      - TRACE_OTLP_ENABLED=${TRACE_OTLP_ENABLED:-true} # true, false
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      - OTEL_EXPORTER_OTLP_INSECURE=${OTEL_EXPORTER_OTLP_INSECURE:-true}
       - TRACE_SAMPLER=${TRACE_SAMPLER:-always} # always, never, ratio, parent_based
       - TRACE_SAMPLE_RATIO=${TRACE_SAMPLE_RATIO:-1.0} # 0.0 to 1.0
       - METRICS_ENABLED=${METRICS_ENABLED:-true} # true, false
@@ -78,6 +83,31 @@ services:
     depends_on:
       auth-db:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
+    networks:
+      - castor-auth-net
+    restart: unless-stopped
+
+  # OpenTelemetry Collector (Forwarding to Grafana Cloud)
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    container_name: castor-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    env_file:
+      - path: ../../.env
+        required: false
+      - path: .env
+        required: false
+    environment:
+      - GRAFANA_CLOUD_OTLP_ENDPOINT=${GRAFANA_CLOUD_OTLP_ENDPOINT:-https://otlp-gateway-prod-us-east-0.grafana.net/otlp}
+      - GRAFANA_CLOUD_INSTANCE_ID=${GRAFANA_CLOUD_INSTANCE_ID:-}
+      - GRAFANA_CLOUD_API_KEY=${GRAFANA_CLOUD_API_KEY:-}
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "${OTEL_COLLECTOR_GRPC_PORT:-4317}:4317" # OTLP gRPC receiver
+      - "${OTEL_COLLECTOR_HTTP_PORT:-4318}:4318" # OTLP HTTP receiver
     networks:
       - castor-auth-net
     restart: unless-stopped

@@ -14,11 +14,15 @@ func TestLoadConfig_Baselines(t *testing.T) {
 		wantFormat  string
 		wantTracing bool
 		wantMetrics bool
+		wantLogOut  bool
+		wantTrOut   bool
+		wantTrOTLP  bool
 	}{
-		{EnvDev, EnvDev, slog.LevelDebug, LogFormatText, true, true},
-		{EnvProd, EnvProd, slog.LevelInfo, LogFormatJSON, true, true},
-		{EnvTest, EnvTest, slog.LevelError, LogFormatText, false, true},
-		{EnvOff, EnvOff, slog.LevelError, LogFormatText, false, false},
+		{EnvDev, EnvDev, slog.LevelDebug, LogFormatText, true, true, true, true, false},
+		{EnvStage, EnvStage, slog.LevelInfo, LogFormatJSON, true, true, true, true, true},
+		{EnvProd, EnvProd, slog.LevelInfo, LogFormatJSON, true, true, false, false, true},
+		{EnvTest, EnvTest, slog.LevelError, LogFormatText, false, true, false, false, false},
+		{EnvOff, EnvOff, slog.LevelError, LogFormatText, false, false, false, false, false},
 	}
 
 	for _, tc := range tests {
@@ -37,6 +41,15 @@ func TestLoadConfig_Baselines(t *testing.T) {
 		}
 		if cfg.MetricsEnabled != tc.wantMetrics {
 			t.Errorf("[%s] MetricsEnabled = %v, want %v", tc.env, cfg.MetricsEnabled, tc.wantMetrics)
+		}
+		if cfg.LogStdoutEnabled != tc.wantLogOut {
+			t.Errorf("[%s] LogStdoutEnabled = %v, want %v", tc.env, cfg.LogStdoutEnabled, tc.wantLogOut)
+		}
+		if cfg.TraceStdoutEnabled != tc.wantTrOut {
+			t.Errorf("[%s] TraceStdoutEnabled = %v, want %v", tc.env, cfg.TraceStdoutEnabled, tc.wantTrOut)
+		}
+		if cfg.TraceOTLPEnabled != tc.wantTrOTLP {
+			t.Errorf("[%s] TraceOTLPEnabled = %v, want %v", tc.env, cfg.TraceOTLPEnabled, tc.wantTrOTLP)
 		}
 	}
 }
@@ -107,6 +120,31 @@ func TestLoadConfig_RatioBoundaryClamping(t *testing.T) {
 	cfgLow := LoadConfig("svc", EnvProd)
 	if cfgLow.TraceSampleRatio != 0.0 {
 		t.Errorf("TraceSampleRatio = %f, want 0.0", cfgLow.TraceSampleRatio)
+	}
+}
+
+func TestLoadConfig_ExporterOverrides(t *testing.T) {
+	t.Setenv("LOG_STDOUT_ENABLED", "true")
+	t.Setenv("TRACE_STDOUT_ENABLED", "true")
+	t.Setenv("TRACE_OTLP_ENABLED", "false")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://custom-collector:4317")
+	t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "false")
+
+	cfg := LoadConfig("svc", EnvProd)
+	if !cfg.LogStdoutEnabled {
+		t.Errorf("LogStdoutEnabled with override = %v, want true", cfg.LogStdoutEnabled)
+	}
+	if !cfg.TraceStdoutEnabled {
+		t.Errorf("TraceStdoutEnabled with override = %v, want true", cfg.TraceStdoutEnabled)
+	}
+	if cfg.TraceOTLPEnabled {
+		t.Errorf("TraceOTLPEnabled with override = %v, want false", cfg.TraceOTLPEnabled)
+	}
+	if cfg.OTLPEndpoint != "http://custom-collector:4317" {
+		t.Errorf("OTLPEndpoint = %q, want custom endpoint", cfg.OTLPEndpoint)
+	}
+	if cfg.OTLPInsecure {
+		t.Errorf("OTLPInsecure with override = %v, want false", cfg.OTLPInsecure)
 	}
 }
 
