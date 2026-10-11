@@ -18,15 +18,10 @@ type Metrics struct {
 
 var defaultMetrics *Metrics
 
-func NewMetrics(serviceName string, env ...string) *Metrics {
-	targetEnv := GetEnv()
-	if len(env) > 0 && strings.TrimSpace(env[0]) != "" {
-		targetEnv = NormalizeEnv(env[0])
-	}
-
+func NewMetricsWithConfig(cfg Config) *Metrics {
 	reg := prometheus.NewRegistry()
 
-	if targetEnv == EnvOff {
+	if !cfg.MetricsEnabled || cfg.Env == EnvOff {
 		return &Metrics{
 			Registry: reg,
 			Handler:  http.NotFoundHandler(),
@@ -39,7 +34,7 @@ func NewMetrics(serviceName string, env ...string) *Metrics {
 		}
 	}
 
-	namespace := strings.ReplaceAll(serviceName, "-", "_")
+	namespace := strings.ReplaceAll(cfg.ServiceName, "-", "_")
 	if namespace == "" {
 		namespace = "castor"
 	}
@@ -97,9 +92,19 @@ func (m *Metrics) Register(collectors ...prometheus.Collector) error {
 	return nil
 }
 
-func InitMetrics(serviceName string, env ...string) *Metrics {
-	defaultMetrics = NewMetrics(serviceName, env...)
+func NewMetrics(serviceName string, env ...string) *Metrics {
+	cfg := LoadConfig(serviceName, env...)
+	return NewMetricsWithConfig(cfg)
+}
+
+func InitMetricsWithConfig(cfg Config) *Metrics {
+	defaultMetrics = NewMetricsWithConfig(cfg)
 	return defaultMetrics
+}
+
+func InitMetrics(serviceName string, env ...string) *Metrics {
+	cfg := LoadConfig(serviceName, env...)
+	return InitMetricsWithConfig(cfg)
 }
 
 func DefaultMetrics() *Metrics {

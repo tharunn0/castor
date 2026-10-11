@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -25,19 +24,14 @@ type Telemetry struct {
 	Shutdown       func(context.Context) error
 }
 
-func NewTracerProvider(ctx context.Context, serviceName string, env ...string) (trace.TracerProvider, func(context.Context) error, error) {
-	targetEnv := GetEnv()
-	if len(env) > 0 && strings.TrimSpace(env[0]) != "" {
-		targetEnv = NormalizeEnv(env[0])
-	}
-
-	if targetEnv == EnvOff {
+func NewTracerProviderWithConfig(ctx context.Context, cfg Config) (trace.TracerProvider, func(context.Context) error, error) {
+	if !cfg.TracingEnabled || cfg.Env == EnvOff {
 		tp := noop.NewTracerProvider()
 		return tp, func(context.Context) error { return nil }, nil
 	}
 
 	var traceOpts []stdouttrace.Option
-	if targetEnv == EnvDev {
+	if cfg.Env == EnvDev {
 		traceOpts = append(traceOpts, stdouttrace.WithPrettyPrint())
 	}
 
@@ -48,26 +42,44 @@ func NewTracerProvider(ctx context.Context, serviceName string, env ...string) (
 
 	res, err := resource.New(ctx,
 		resource.WithAttributes(
-			semconv.ServiceNameKey.String(serviceName),
-			attribute.String("environment", targetEnv),
+			semconv.ServiceNameKey.String(cfg.ServiceName),
+			attribute.String("environment", cfg.Env),
 		),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create otel resource: %w", err)
 	}
 
+	var sampler sdktrace.Sampler
+	switch cfg.TraceSampler {
+	case TraceSamplerNever:
+		sampler = sdktrace.NeverSample()
+	case TraceSamplerRatio:
+		sampler = sdktrace.TraceIDRatioBased(cfg.TraceSampleRatio)
+	case TraceSamplerParentBased:
+		sampler = sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.TraceSampleRatio))
+	default:
+		sampler = sdktrace.AlwaysSample()
+	}
+
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
 		sdktrace.WithResource(res),
+		sdktrace.WithSampler(sampler),
 	)
 
 	return tp, tp.Shutdown, nil
 }
 
-func Init(ctx context.Context, serviceName string, env ...string) (*Telemetry, error) {
-	logger := InitLogger(env...)
+func NewTracerProvider(ctx context.Context, serviceName string, env ...string) (trace.TracerProvider, func(context.Context) error, error) {
+	cfg := LoadConfig(serviceName, env...)
+	return NewTracerProviderWithConfig(ctx, cfg)
+}
 
-	tp, shutdown, err := NewTracerProvider(ctx, serviceName, env...)
+func InitWithConfig(ctx context.Context, cfg Config) (*Telemetry, error) {
+	logger := InitLoggerWithConfig(cfg)
+
+	tp, shutdown, err := NewTracerProviderWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -78,8 +90,8 @@ func Init(ctx context.Context, serviceName string, env ...string) (*Telemetry, e
 		propagation.Baggage{},
 	))
 
-	tracer := tp.Tracer(serviceName)
-	metrics := InitMetrics(serviceName, env...)
+	tracer := tp.Tracer(cfg.ServiceName)
+	metrics := InitMetricsWithConfig(cfg)
 
 	return &Telemetry{
 		Logger:         logger,
@@ -88,6 +100,11 @@ func Init(ctx context.Context, serviceName string, env ...string) (*Telemetry, e
 		Metrics:        metrics,
 		Shutdown:       shutdown,
 	}, nil
+}
+
+func Init(ctx context.Context, serviceName string, env ...string) (*Telemetry, error) {
+	cfg := LoadConfig(serviceName, env...)
+	return InitWithConfig(ctx, cfg)
 }
 
 func GetTracer(name string, opts ...trace.TracerOption) trace.Tracer {
