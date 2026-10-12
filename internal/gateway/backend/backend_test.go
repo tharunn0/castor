@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -27,6 +28,7 @@ import (
 	"github.com/tharunn0/castor/internal/metadata/consensus"
 	metaserver "github.com/tharunn0/castor/internal/metadata/server"
 	"github.com/tharunn0/castor/internal/metadata/store"
+	gwauth "github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/s3err"
 	"github.com/versity/versitygw/s3response"
 	"google.golang.org/grpc"
@@ -919,4 +921,180 @@ func TestCastorBackend_ListObjectsV2(t *testing.T) {
 	}
 }
 
+func TestCastorBackend_HeadObject(t *testing.T) {
+	node1Addr, cleanup1 := startTestDataNode(t, "data-head-1")
+	defer cleanup1()
+	node2Addr, cleanup2 := startTestDataNode(t, "data-head-2")
+	defer cleanup2()
 
+	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-head-1")
+	defer metaCleanup()
+
+	cfg := config.Config{
+		ChunkSize:            4 << 20,
+		WriteQuorum:          2,
+		MaxConcurrentUploads: 4,
+		DataNodes:            []string{node1Addr, node2Addr},
+	}
+
+	engine := storage.New(cfg, metaClient)
+	defer engine.Close()
+
+	be := New(engine, metaClient)
+	ctx := context.Background()
+
+	emptyStr := ""
+	validBucket := "backend-head-bucket"
+	validKey := "test-head-file.bin"
+
+	if _, err := be.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: &emptyStr,
+		Key:    &validKey,
+	}); !errors.Is(err, s3err.GetAPIError(s3err.ErrInvalidBucketName)) {
+		t.Fatalf("expected ErrInvalidBucketName, got %v", err)
+	}
+
+	if _, err := be.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: &validBucket,
+		Key:    &emptyStr,
+	}); !errors.Is(err, s3err.GetAPIError(s3err.ErrNoSuchKey)) {
+		t.Fatalf("expected ErrNoSuchKey, got %v", err)
+	}
+
+	if _, err := be.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: &validBucket,
+		Key:    &validKey,
+	}); !errors.Is(err, s3err.GetBucketErr(s3err.ErrNoSuchBucket, validBucket)) {
+		t.Fatalf("expected ErrNoSuchBucket, got %v", err)
+	}
+
+	if err := be.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: &validBucket}, nil); err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	if _, err := be.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: &validBucket,
+		Key:    &validKey,
+	}); !errors.Is(err, s3err.GetAPIError(s3err.ErrNoSuchKey)) {
+		t.Fatalf("expected ErrNoSuchKey, got %v", err)
+	}
+
+	payload := make([]byte, 5*1024*1024)
+	for i := range payload {
+		payload[i] = byte(i % 251)
+	}
+	h := sha256.Sum256(payload)
+	expectedETag := fmt.Sprintf("%q", hex.EncodeToString(h[:]))
+	length := int64(len(payload))
+
+	putOut, err := be.PutObject(ctx, s3response.PutObjectInput{
+		Bucket:        &validBucket,
+		Key:           &validKey,
+		Body:          bytes.NewReader(payload),
+		ContentLength: &length,
+	})
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+	if putOut.ETag != expectedETag {
+		t.Fatalf("ETag mismatch: expected %s, got %s", expectedETag, putOut.ETag)
+	}
+
+	headOut, err := be.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: &validBucket,
+		Key:    &validKey,
+	})
+	if err != nil {
+		t.Fatalf("HeadObject failed: %v", err)
+	}
+	if *headOut.ContentLength != length {
+		t.Fatalf("expected size %d, got %d", length, *headOut.ContentLength)
+	}
+	if *headOut.ETag != expectedETag {
+		t.Fatalf("expected ETag %s, got %s", expectedETag, *headOut.ETag)
+	}
+
+	rangeStr := "bytes=0-1023"
+	rangeHead, err := be.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: &validBucket,
+		Key:    &validKey,
+		Range:  &rangeStr,
+	})
+	if err != nil {
+		t.Fatalf("range HeadObject failed: %v", err)
+	}
+	if *rangeHead.ContentLength != 1024 {
+		t.Fatalf("expected ranged size 1024, got %d", *rangeHead.ContentLength)
+	}
+	if *rangeHead.ContentRange != fmt.Sprintf("bytes 0-1023/%d", length) {
+		t.Fatalf("expected ContentRange bytes 0-1023/%d, got %s", length, *rangeHead.ContentRange)
+	}
+
+	wrongMatch := "\"wrongetag\""
+	if _, err := be.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket:  &validBucket,
+		Key:     &validKey,
+		IfMatch: &wrongMatch,
+	}); err == nil {
+		t.Fatalf("expected precondition error on IfMatch mismatch, got nil")
+	}
+}
+
+func TestCastorBackend_GetBucketAcl(t *testing.T) {
+	node1Addr, cleanup1 := startTestDataNode(t, "data-acl-1")
+	defer cleanup1()
+
+	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-acl-1")
+	defer metaCleanup()
+
+	cfg := config.Config{
+		ChunkSize:            4 << 20,
+		WriteQuorum:          1,
+		MaxConcurrentUploads: 4,
+		DataNodes:            []string{node1Addr},
+	}
+
+	engine := storage.New(cfg, metaClient)
+	defer engine.Close()
+
+	be := New(engine, metaClient)
+	ctx := context.Background()
+
+	nonExistent := "nonexistent-bucket"
+	data, err := be.GetBucketAcl(ctx, &s3.GetBucketAclInput{Bucket: &nonExistent})
+	if err != nil {
+		t.Fatalf("GetBucketAcl failed: %v", err)
+	}
+	var acl gwauth.ACL
+	if err := json.Unmarshal(data, &acl); err != nil {
+		t.Fatalf("unmarshal ACL failed: %v", err)
+	}
+	if acl.Owner != "admin" {
+		t.Fatalf("expected owner admin, got %s", acl.Owner)
+	}
+	if len(acl.Grantees) != 1 || acl.Grantees[0].Access != "admin" || acl.Grantees[0].Permission != gwauth.PermissionFullControl {
+		t.Fatalf("expected admin full control grantee, got %+v", acl.Grantees)
+	}
+
+	customBucket := "custom-owner-bucket"
+	customOwner := "user-uuid-999"
+	defaultACLBytes := []byte(fmt.Sprintf(`{"Owner":%q}`, customOwner))
+	if err := be.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: &customBucket}, defaultACLBytes); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	dataCustom, err := be.GetBucketAcl(ctx, &s3.GetBucketAclInput{Bucket: &customBucket})
+	if err != nil {
+		t.Fatalf("GetBucketAcl for custom bucket failed: %v", err)
+	}
+	var customAcl gwauth.ACL
+	if err := json.Unmarshal(dataCustom, &customAcl); err != nil {
+		t.Fatalf("unmarshal custom ACL failed: %v", err)
+	}
+	if customAcl.Owner != customOwner {
+		t.Fatalf("expected owner %s, got %s", customOwner, customAcl.Owner)
+	}
+	if len(customAcl.Grantees) != 1 || customAcl.Grantees[0].Access != customOwner || customAcl.Grantees[0].Permission != gwauth.PermissionFullControl {
+		t.Fatalf("expected owner full control grantee, got %+v", customAcl.Grantees)
+	}
+}

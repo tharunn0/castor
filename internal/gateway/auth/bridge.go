@@ -52,7 +52,8 @@ func (b *Bridge) GetUserAccount(access string) (gwauth.Account, error) {
 	return gwauth.Account{
 		Access: resp.AccessKeyID,
 		Secret: resp.SecretAccessKey,
-		Role:   gwauth.RoleUser,
+		Role:   gwauth.RoleUserPlus,
+		Arn:    resp.UserID,
 	}, nil
 }
 

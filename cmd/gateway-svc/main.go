@@ -10,6 +10,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
+	gwauth "github.com/tharunn0/castor/internal/gateway/auth"
 	"github.com/tharunn0/castor/internal/gateway/backend"
 	"github.com/tharunn0/castor/internal/gateway/config"
 	"github.com/tharunn0/castor/internal/gateway/health"
@@ -31,6 +32,7 @@ func main() {
 		"metadata_addr", cfg.MetadataAddr,
 		"metadata_nodes", cfg.MetadataNodes,
 		"data_nodes", cfg.DataNodes,
+		"auth_addr", cfg.AuthAddr,
 	)
 
 	metaConn, err := grpc.NewClient(cfg.MetadataAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -45,6 +47,11 @@ func main() {
 	defer engine.Close()
 
 	be := backend.New(engine, metaClient)
+
+	authClient := gwauth.NewHTTPClient(cfg.AuthAddr)
+	iamBridge := gwauth.NewBridge(authClient, cfg.RootAccessKey, cfg.RootSecretKey)
+	iamCache := gwauth.NewCachedBridge(iamBridge)
+	defer iamCache.Shutdown()
 
 	healthApp := health.NewApp(cfg)
 	healthHandler := health.NewHandler(cfg)
@@ -70,6 +77,7 @@ func main() {
 		MaxConnections:    65536,
 		MaxRequests:       65536,
 		MultipartMaxParts: 10000,
+		IAMService:        iamCache,
 		S3Options: []s3api.Option{
 			s3api.WithRoute("GET", "/health", healthHandler),
 			s3api.WithRoute("GET", "/healthz", healthHandler),

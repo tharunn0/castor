@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
 	"github.com/tharunn0/castor/internal/gateway/storage"
+	gwauth "github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/backend"
 	"github.com/versity/versitygw/s3err"
 	"github.com/versity/versitygw/s3response"
@@ -47,7 +48,33 @@ func (b *CastorBackend) NormalizeObjectKey(bucket, object string) string {
 }
 
 func (b *CastorBackend) GetBucketAcl(ctx context.Context, input *s3.GetBucketAclInput) ([]byte, error) {
-	return []byte(`{"Owner":"admin","Grants":[]}`), nil
+	owner := "admin"
+	if input != nil && input.Bucket != nil && *input.Bucket != "" {
+		buckets, err := b.engine.ListBuckets(ctx)
+		if err == nil {
+			for _, info := range buckets {
+				if info.Name == *input.Bucket && info.OwnerID != "" {
+					owner = info.OwnerID
+					break
+				}
+			}
+		}
+	}
+	acl := gwauth.ACL{
+		Owner: owner,
+		Grantees: []gwauth.Grantee{
+			{
+				Access:     owner,
+				Permission: gwauth.PermissionFullControl,
+				Type:       types.TypeCanonicalUser,
+			},
+		},
+	}
+	return json.Marshal(acl)
+}
+
+func (b *CastorBackend) GetBucketPolicy(ctx context.Context, bucket string) ([]byte, error) {
+	return nil, s3err.GetAPIError(s3err.ErrNoSuchBucketPolicy)
 }
 
 func (b *CastorBackend) GetBucketVersioning(ctx context.Context, bucket string) (s3response.GetBucketVersioningOutput, error) {
@@ -193,6 +220,88 @@ func (b *CastorBackend) GetObject(ctx context.Context, input *s3.GetObjectInput)
 	}
 	if info.ContentType != "" {
 		out.ContentType = aws.String(info.ContentType)
+	} else {
+		out.ContentType = aws.String("application/octet-stream")
+	}
+
+	return out, nil
+}
+
+func (b *CastorBackend) HeadObject(ctx context.Context, input *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
+	if input == nil || input.Bucket == nil || *input.Bucket == "" {
+		return nil, s3err.GetAPIError(s3err.ErrInvalidBucketName)
+	}
+	if input.Key == nil || *input.Key == "" {
+		return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
+	}
+
+	exists, err := b.engine.CheckBucketExists(ctx, *input.Bucket)
+	if err != nil {
+		if errors.Is(err, storage.ErrBucketNotFound) {
+			return nil, s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
+		}
+		return nil, err
+	}
+	if !exists {
+		return nil, s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
+	}
+
+	manifest, err := b.engine.GetManifest(ctx, *input.Bucket, *input.Key)
+	if err != nil {
+		if errors.Is(err, storage.ErrBucketNotFound) {
+			return nil, s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
+		}
+		if errors.Is(err, storage.ErrObjectNotFound) {
+			return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
+		}
+		if s, ok := status.FromError(err); ok && s.Code() == codes.NotFound {
+			return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
+		}
+		return nil, err
+	}
+	if manifest.GetStatus() == "deleted" {
+		return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
+	}
+
+	var updatedAt time.Time
+	if manifest.GetUpdatedAt() != nil {
+		updatedAt = manifest.GetUpdatedAt().AsTime()
+	}
+
+	if preErr := backend.EvaluatePreconditions(manifest.GetEtag(), updatedAt, backend.PreConditions{
+		IfMatch:       input.IfMatch,
+		IfNoneMatch:   input.IfNoneMatch,
+		IfModSince:    input.IfModifiedSince,
+		IfUnmodeSince: input.IfUnmodifiedSince,
+	}); preErr != nil {
+		return nil, preErr
+	}
+
+	out := &s3.HeadObjectOutput{
+		AcceptRanges: aws.String("bytes"),
+		ETag:         aws.String(fmt.Sprintf("%q", manifest.GetEtag())),
+		LastModified: aws.Time(updatedAt),
+	}
+
+	var start, length int64
+	var isRangeValid bool
+	if input.Range != nil && *input.Range != "" {
+		s, l, valid, rangeErr := backend.ParseObjectRange(manifest.GetSize(), *input.Range)
+		if rangeErr != nil {
+			return nil, rangeErr
+		}
+		start, length, isRangeValid = s, l, valid
+	}
+
+	if isRangeValid {
+		out.ContentRange = aws.String(fmt.Sprintf("bytes %d-%d/%d", start, start+length-1, manifest.GetSize()))
+		out.ContentLength = aws.Int64(length)
+	} else {
+		out.ContentLength = aws.Int64(manifest.GetSize())
+	}
+
+	if manifest.GetContentType() != "" {
+		out.ContentType = aws.String(manifest.GetContentType())
 	} else {
 		out.ContentType = aws.String("application/octet-stream")
 	}

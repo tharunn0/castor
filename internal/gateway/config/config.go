@@ -14,6 +14,7 @@ type Config struct {
 	MetadataAddr         string
 	MetadataNodes        []string
 	DataNodes            []string
+	AuthAddr             string
 	RootAccessKey        string
 	RootSecretKey        string
 	ChunkSize            int64
@@ -48,6 +49,7 @@ func Load() Config {
 		}
 	}
 
+	authAddr := getEnv("AUTH_ADDR", "http://127.0.0.1:9095")
 	rootAccessKey := getEnv("ROOT_ACCESS_KEY_ID", "admin")
 	rootSecretKey := getEnv("ROOT_SECRET_ACCESS_KEY", "admin123")
 
@@ -78,6 +80,7 @@ func Load() Config {
 		MetadataAddr:         metadataAddr,
 		MetadataNodes:        metadataNodes,
 		DataNodes:            dataNodes,
+		AuthAddr:             authAddr,
 		RootAccessKey:        rootAccessKey,
 		RootSecretKey:        rootSecretKey,
 		ChunkSize:            chunkSize,

@@ -83,6 +83,7 @@ func startTestMetadataNode(t *testing.T, nodeID string) (string, *consensus.Raft
 		RaftAddr:      "127.0.0.1:0",
 		DataDir:       tmpDir,
 		RaftBootstrap: true,
+		RaftLogOutput: io.Discard,
 	}
 
 	raftNode, err := consensus.NewRaftNode(raftCfg, nil, fsm)

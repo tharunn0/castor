@@ -72,7 +72,7 @@ func TestBridge_GetUserAccount(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if acc.Access != "AKIAACTIVEUSER123456" || acc.Secret != "userSecretKey456789" || acc.Role != gwauth.RoleUser {
+		if acc.Access != "AKIAACTIVEUSER123456" || acc.Secret != "userSecretKey456789" || acc.Role != gwauth.RoleUserPlus || acc.Arn != "usr-1" {
 			t.Fatalf("unexpected user account: %+v", acc)
 		}
 	})
