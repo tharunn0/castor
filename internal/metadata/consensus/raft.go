@@ -86,7 +86,7 @@ func NewRaftNode(cfg config.Config, logger *slog.Logger, fsm *FSM) (*RaftNode, e
 	raftConfig.ElectionTimeout = 200 * time.Millisecond
 	raftConfig.LeaderLeaseTimeout = 100 * time.Millisecond
 	raftConfig.CommitTimeout = 50 * time.Millisecond
-	raftConfig.LogOutput = os.Stderr
+	raftConfig.LogOutput = cfg.RaftLogOutput
 
 	hasExistingState, err := raft.HasExistingState(boltStore, boltStore, snapshotStore)
 	if err != nil {

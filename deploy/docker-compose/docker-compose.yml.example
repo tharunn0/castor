@@ -14,6 +14,7 @@ services:
       - DATA_DIR=${METADATA_1_DATA_DIR:-/data}
       - RAFT_BOOTSTRAP=true
       - RAFT_PEERS=${RAFT_PEERS:-metadata-1=metadata-1:9091,metadata-2=metadata-2:9091,metadata-3=metadata-3:9091}
+      - RAFT_LOG_OUTPUT=discard
     ports:
       - "${METADATA_1_PORT:-9090}:9090"
       - "${METADATA_1_RAFT_PORT:-9091}:9091"
@@ -37,6 +38,7 @@ services:
       - DATA_DIR=${METADATA_2_DATA_DIR:-/data}
       - RAFT_BOOTSTRAP=false
       - RAFT_PEERS=${RAFT_PEERS:-metadata-1=metadata-1:9091,metadata-2=metadata-2:9091,metadata-3=metadata-3:9091}
+      - RAFT_LOG_OUTPUT=discard
     ports:
       - "${METADATA_2_PORT:-9092}:9090"
     volumes:
@@ -61,6 +63,7 @@ services:
       - DATA_DIR=${METADATA_3_DATA_DIR:-/data}
       - RAFT_BOOTSTRAP=false
       - RAFT_PEERS=${RAFT_PEERS:-metadata-1=metadata-1:9091,metadata-2=metadata-2:9091,metadata-3=metadata-3:9091}
+      - RAFT_LOG_OUTPUT=discard
     ports:
       - "${METADATA_3_PORT:-9094}:9090"
     volumes:
