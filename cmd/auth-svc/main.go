@@ -89,6 +89,12 @@ func main() {
 	sig := <-shutdownChan
 	logger.Info("shutting down auth service", "signal", sig.String())
 
-	_ = srv.Shutdown()
+	shutdownTimeout := cfg.ShutdownTimeout
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = 10 * time.Second
+	}
+	if err := srv.ShutdownWithTimeout(shutdownTimeout); err != nil {
+		logger.Error("error shutting down auth server", "error", err)
+	}
 	logger.Info("auth service stopped cleanly")
 }

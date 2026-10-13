@@ -50,9 +50,20 @@ func New(cfg config.Config, authHandler *handler.AuthHandler, healthHandler *han
 		}
 	}
 
-	app := fiber.New(fiber.Config{
+	fiberCfg := fiber.Config{
 		ErrorHandler: httperr.ErrorHandler,
-	})
+	}
+	if cfg.ReadTimeout > 0 {
+		fiberCfg.ReadTimeout = cfg.ReadTimeout
+	}
+	if cfg.WriteTimeout > 0 {
+		fiberCfg.WriteTimeout = cfg.WriteTimeout
+	}
+	if cfg.IdleTimeout > 0 {
+		fiberCfg.IdleTimeout = cfg.IdleTimeout
+	}
+
+	app := fiber.New(fiberCfg)
 
 	if sOpts.telemetry != nil {
 		app.Use(telemetry.FiberMiddleware(telemetry.FiberConfig{

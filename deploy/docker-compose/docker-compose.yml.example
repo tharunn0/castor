@@ -198,8 +198,19 @@ services:
     container_name: castor-auth-svc
     environment:
       - AUTH_HTTP_ADDR=${AUTH_HTTP_ADDR:-:9095}
+      - AUTH_READ_TIMEOUT=${AUTH_READ_TIMEOUT:-10s}
+      - AUTH_WRITE_TIMEOUT=${AUTH_WRITE_TIMEOUT:-10s}
+      - AUTH_IDLE_TIMEOUT=${AUTH_IDLE_TIMEOUT:-120s}
+      - AUTH_SHUTDOWN_TIMEOUT=${AUTH_SHUTDOWN_TIMEOUT:-10s}
       - AUTH_DATABASE_URL=${AUTH_DATABASE_URL:-postgres://${POSTGRES_USER:-castor}:${POSTGRES_PASSWORD:-castor123}@auth-db:5432/${POSTGRES_DB:-castor_auth}?sslmode=disable}
+      - AUTH_DB_MAX_CONNS=${AUTH_DB_MAX_CONNS:-25}
+      - AUTH_DB_MIN_CONNS=${AUTH_DB_MIN_CONNS:-5}
+      - AUTH_DB_MAX_CONN_LIFETIME=${AUTH_DB_MAX_CONN_LIFETIME:-1h}
+      - AUTH_DB_MAX_CONN_IDLE_TIME=${AUTH_DB_MAX_CONN_IDLE_TIME:-30m}
+      - AUTH_DB_HEALTH_CHECK_PERIOD=${AUTH_DB_HEALTH_CHECK_PERIOD:-1m}
+      - AUTH_DB_CONNECT_TIMEOUT=${AUTH_DB_CONNECT_TIMEOUT:-5s}
       - ADMIN_KEY=${ADMIN_KEY:-castor-cluster-admin-secret}
+      - AUTH_BCRYPT_COST=${AUTH_BCRYPT_COST:-12}
       - AUTH_JWT_SECRET=${AUTH_JWT_SECRET:-castor-auth-jwt-super-secret-key-change-in-production}
       - AUTH_JWT_EXPIRY=${AUTH_JWT_EXPIRY:-24h}
     ports:

@@ -84,10 +84,12 @@ func (s *Service) Register(ctx context.Context, req model.RegisterRequest) (*mod
 		role = model.RoleAdmin
 	}
 
-	hashCtx := ctx
 	hashCtx, hashSpan := s.tracer.Start(ctx, "auth.hash_password")
-
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), 12)
+	cost := s.cfg.BcryptCost
+	if cost < bcrypt.MinCost || cost > bcrypt.MaxCost {
+		cost = 12
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), cost)
 	if err != nil {
 		return nil, fmt.Errorf("hash password: %w", err)
 	}

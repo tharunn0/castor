@@ -777,3 +777,43 @@ func TestService_Telemetry(t *testing.T) {
 	}
 }
 
+func TestService_Register_ConfigurableBcryptCost(t *testing.T) {
+	var savedHash string
+	userRepo := &mockUserRepo{
+		createUserFunc: func(ctx context.Context, input model.CreateUserInput) (*model.User, error) {
+			savedHash = input.PasswordHash
+			return &model.User{
+				ID:           uuid.New(),
+				Username:     input.Username,
+				Email:        input.Email,
+				PasswordHash: input.PasswordHash,
+				Role:         input.Role,
+				CreatedAt:    time.Now().UTC(),
+			}, nil
+		},
+	}
+
+	cfg := config.Config{
+		BcryptCost: 4, // minimum cost for fast execution in tests
+	}
+	svc := NewService(cfg, userRepo)
+
+	_, err := svc.Register(context.Background(), model.RegisterRequest{
+		Username: "bob",
+		Email:    "bob@example.com",
+		Password: "SecurePassword123!",
+	})
+	if err != nil {
+		t.Fatalf("unexpected register error: %v", err)
+	}
+
+	cost, err := bcrypt.Cost([]byte(savedHash))
+	if err != nil {
+		t.Fatalf("failed to get bcrypt cost: %v", err)
+	}
+	if cost != 4 {
+		t.Errorf("expected bcrypt cost 4, got %d", cost)
+	}
+}
+
+

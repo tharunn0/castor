@@ -432,3 +432,26 @@ func TestServer_Telemetry(t *testing.T) {
 		t.Errorf("expected status 200 for /metrics, got %d", resp.StatusCode)
 	}
 }
+
+func TestServer_TimeoutsConfigured(t *testing.T) {
+	cfg := config.Config{
+		HTTPAddr:     ":9095",
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 20 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	srv := New(cfg, nil, nil)
+	fiberCfg := srv.App().Config()
+
+	if fiberCfg.ReadTimeout != 15*time.Second {
+		t.Errorf("expected ReadTimeout 15s, got %v", fiberCfg.ReadTimeout)
+	}
+	if fiberCfg.WriteTimeout != 20*time.Second {
+		t.Errorf("expected WriteTimeout 20s, got %v", fiberCfg.WriteTimeout)
+	}
+	if fiberCfg.IdleTimeout != 60*time.Second {
+		t.Errorf("expected IdleTimeout 60s, got %v", fiberCfg.IdleTimeout)
+	}
+}
+
