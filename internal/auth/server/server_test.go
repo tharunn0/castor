@@ -454,4 +454,3 @@ func TestServer_TimeoutsConfigured(t *testing.T) {
 		t.Errorf("expected IdleTimeout 60s, got %v", fiberCfg.IdleTimeout)
 	}
 }
-

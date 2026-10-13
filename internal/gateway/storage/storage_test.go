@@ -809,5 +809,3 @@ func TestStorageEngine_ListObjects(t *testing.T) {
 		t.Fatalf("expected 2 manifests on first page, got %d", len(pageResp.GetManifests()))
 	}
 }
-
-

@@ -305,7 +305,6 @@ func (e *StorageEngine) FindLeader(ctx context.Context) (castorv1.MetadataServic
 	return nil, "", errors.New("no metadata leader found")
 }
 
-
 func (e *StorageEngine) PutObject(ctx context.Context, bucket, key, ownerID string, reader io.Reader, size int64) (string, error) {
 	if bucket == "" {
 		return "", errors.New("bucket name is required")
@@ -448,7 +447,6 @@ func (e *StorageEngine) GetObjectRange(ctx context.Context, bucket, key string, 
 	if manifestResp.GetStatus() == "deleted" {
 		return nil, nil, ErrObjectNotFound
 	}
-
 
 	objInfo := &ObjectInfo{
 		Bucket:      manifestResp.GetBucket(),
@@ -811,6 +809,3 @@ func (e *StorageEngine) ListObjects(ctx context.Context, bucket, prefix, delimit
 
 	return resp, nil
 }
-
-
-

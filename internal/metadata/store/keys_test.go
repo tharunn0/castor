@@ -153,4 +153,3 @@ func TestPrefixNext(t *testing.T) {
 		t.Fatal("expected nil for all 0xff bytes")
 	}
 }
-

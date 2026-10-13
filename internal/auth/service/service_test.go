@@ -8,15 +8,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"golang.org/x/crypto/bcrypt"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"github.com/tharunn0/castor/internal/auth/authctx"
 	"github.com/tharunn0/castor/internal/auth/config"
 	"github.com/tharunn0/castor/internal/auth/model"
 	"github.com/tharunn0/castor/internal/auth/repository"
 	authtel "github.com/tharunn0/castor/internal/auth/telemetry"
 	"github.com/tharunn0/castor/internal/telemetry"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type mockUserRepo struct {
@@ -815,5 +815,3 @@ func TestService_Register_ConfigurableBcryptCost(t *testing.T) {
 		t.Errorf("expected bcrypt cost 4, got %d", cost)
 	}
 }
-
-

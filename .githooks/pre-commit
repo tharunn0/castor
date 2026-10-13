@@ -1,0 +1,16 @@
+
+#!/bin/sh
+set -eu
+
+echo "==> Running gofmt..."
+
+# Format all Go files in the repository.
+gofmt -w $(find . -type f -name '*.go' \
+    -not -path './vendor/*' \
+    -not -path './.git/*')
+
+echo "==> Running go vet ./..."
+
+go vet ./...
+
+echo "==> Pre-commit checks passed."

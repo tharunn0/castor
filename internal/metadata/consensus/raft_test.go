@@ -148,4 +148,3 @@ func TestRaftNode_ErrorsWhenNotLeader(t *testing.T) {
 		t.Fatalf("unexpected error message: %s", nle.Error())
 	}
 }
-

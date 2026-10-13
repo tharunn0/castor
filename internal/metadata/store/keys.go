@@ -144,4 +144,3 @@ func PrefixNext(b []byte) []byte {
 	}
 	return nil
 }
-

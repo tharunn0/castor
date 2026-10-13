@@ -139,4 +139,3 @@ func TestNewPoolWithConfig(t *testing.T) {
 		t.Errorf("expected ConnectTimeout 8s, got %v", pCfg.ConnConfig.ConnectTimeout)
 	}
 }
-

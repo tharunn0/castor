@@ -316,7 +316,6 @@ func TestFSM_ApplyDeleteManifest(t *testing.T) {
 	}
 }
 
-
 func TestFSM_ApplyChunkLocationOperations(t *testing.T) {
 	fsm, s := newTestFSM(t)
 	ctx := context.Background()
