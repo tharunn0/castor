@@ -17,8 +17,11 @@ jobs:
         with:
           go-version-file: 'go.mod'
 
-      - name: Run tests with race detector
-        run: go test -v -race ./...
+      - name: Run unit tests with race detector
+        run: go test -v --count=1 -race ./internal/...
+
+      - name: Run integration test without race detector
+        run: go test -v --count=1 ./tests/integration/...
 
   lint:
     name: Lint
