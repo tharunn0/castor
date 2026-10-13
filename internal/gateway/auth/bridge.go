@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	gwauth "github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/s3err"
@@ -14,13 +15,15 @@ type Bridge struct {
 	client        Client
 	rootAccessKey string
 	rootSecretKey string
+	logger        *slog.Logger
 }
 
-func NewBridge(client Client, rootAccessKey, rootSecretKey string) *Bridge {
+func NewBridge(client Client, rootAccessKey, rootSecretKey string, l *slog.Logger) *Bridge {
 	return &Bridge{
 		client:        client,
 		rootAccessKey: rootAccessKey,
 		rootSecretKey: rootSecretKey,
+		logger:        l,
 	}
 }
 
@@ -41,6 +44,8 @@ func (b *Bridge) GetUserAccount(access string) (gwauth.Account, error) {
 		return gwauth.Account{}, gwauth.ErrNoSuchUser
 	}
 
+	b.logger.Debug("[Gateway-Auth : GetUserAccount Request]", "access key", access)
+
 	resp, err := b.client.ValidateKey(context.Background(), access)
 	if err != nil {
 		if errors.Is(err, ErrCredentialNotFound) || errors.Is(err, ErrCredentialRevoked) || errors.Is(err, ErrInvalidAccessKey) {
@@ -48,7 +53,11 @@ func (b *Bridge) GetUserAccount(access string) (gwauth.Account, error) {
 		}
 		return gwauth.Account{}, err
 	}
-
+	b.logger.Debug("[Gateway-Auth: GetUserAccount Response]",
+		"access key", resp.AccessKeyID,
+		"secret key", resp.SecretAccessKey[:5],
+		"user_id", resp.UserID,
+	)
 	return gwauth.Account{
 		Access: resp.AccessKeyID,
 		Secret: resp.SecretAccessKey,

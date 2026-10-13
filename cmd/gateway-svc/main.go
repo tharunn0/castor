@@ -46,10 +46,10 @@ func main() {
 	engine := storage.New(cfg, metaClient)
 	defer engine.Close()
 
-	be := backend.New(engine, metaClient)
+	be := backend.New(engine, metaClient, logger)
 
 	authClient := gwauth.NewHTTPClient(cfg.AuthAddr)
-	iamBridge := gwauth.NewBridge(authClient, cfg.RootAccessKey, cfg.RootSecretKey)
+	iamBridge := gwauth.NewBridge(authClient, cfg.RootAccessKey, cfg.RootSecretKey, logger)
 	iamCache := gwauth.NewCachedBridge(iamBridge)
 	defer iamCache.Shutdown()
 

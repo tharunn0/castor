@@ -3,12 +3,18 @@ package auth
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
 	gwauth "github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/s3err"
 )
+
+func newTestLogger() *slog.Logger {
+	h := slog.DiscardHandler
+	return slog.New(h)
+}
 
 type mockClient struct {
 	validateKeyFunc func(ctx context.Context, accessKeyID string) (*ValidateKeyResponse, error)
@@ -48,7 +54,7 @@ func TestBridge_GetUserAccount(t *testing.T) {
 		},
 	}
 
-	bridge := NewBridge(mock, rootKey, rootSecret)
+	bridge := NewBridge(mock, rootKey, rootSecret, newTestLogger())
 
 	t.Run("empty access key", func(t *testing.T) {
 		_, err := bridge.GetUserAccount("")
@@ -99,7 +105,7 @@ func TestBridge_GetUserAccount(t *testing.T) {
 	})
 
 	t.Run("nil client returns ErrNoSuchUser", func(t *testing.T) {
-		nilBridge := NewBridge(nil, rootKey, rootSecret)
+		nilBridge := NewBridge(nil, rootKey, rootSecret, newTestLogger())
 		_, err := nilBridge.GetUserAccount("AKIAACTIVEUSER123456")
 		if !errors.Is(err, gwauth.ErrNoSuchUser) {
 			t.Fatalf("expected ErrNoSuchUser, got %v", err)
@@ -124,7 +130,7 @@ func TestBridge_ResolveAccounts(t *testing.T) {
 		},
 	}
 
-	bridge := NewBridge(mock, rootKey, rootSecret)
+	bridge := NewBridge(mock, rootKey, rootSecret, newTestLogger())
 
 	keys := []string{"admin", "AKIAVALID1", "AKIAMISSING1", "AKIAMISSING2"}
 	missing, err := bridge.ResolveAccounts(keys)
@@ -138,7 +144,7 @@ func TestBridge_ResolveAccounts(t *testing.T) {
 }
 
 func TestBridge_UnsupportedMethods(t *testing.T) {
-	bridge := NewBridge(nil, "admin", "adminSecret")
+	bridge := NewBridge(nil, "admin", "adminSecret", newTestLogger())
 
 	checkUnsupported := func(name string, err error) {
 		t.Helper()

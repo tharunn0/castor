@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -26,14 +27,16 @@ type CastorBackend struct {
 	backend.BackendUnsupported
 	engine     *storage.StorageEngine
 	metaClient castorv1.MetadataServiceClient
+	logger     *slog.Logger
 }
 
 var _ backend.Backend = (*CastorBackend)(nil)
 
-func New(engine *storage.StorageEngine, metaClient castorv1.MetadataServiceClient) *CastorBackend {
+func New(engine *storage.StorageEngine, metaClient castorv1.MetadataServiceClient, l *slog.Logger) *CastorBackend {
 	return &CastorBackend{
 		engine:     engine,
 		metaClient: metaClient,
+		logger:     l,
 	}
 }
 
@@ -334,6 +337,7 @@ func (b *CastorBackend) CreateBucket(ctx context.Context, req *s3.CreateBucketIn
 		}
 	}
 
+	b.logger.Debug("[ Gateway-Backend : CreateBucket Request ]", "bucket :", *req.Bucket, "owner :", ownerID, "tage :", tags)
 	err := b.engine.CreateBucket(ctx, *req.Bucket, ownerID, tags)
 	if err != nil {
 		if errors.Is(err, storage.ErrBucketAlreadyExists) {
@@ -613,4 +617,3 @@ func (b *CastorBackend) ListObjects(ctx context.Context, input *s3.ListObjectsIn
 
 	return res, nil
 }
-
