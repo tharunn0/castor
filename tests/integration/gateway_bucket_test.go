@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -23,6 +24,10 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+func newTestLogger() *slog.Logger {
+	return slog.New(slog.DiscardHandler)
+}
 
 func TestIntegration_GatewayCreateBucket(t *testing.T) {
 	node1Addr, cleanup1 := startTestDataNode(t, "data-cb-1")
@@ -64,7 +69,7 @@ func TestIntegration_GatewayCreateBucket(t *testing.T) {
 	engine := gwstorage.New(cfg, metaClient)
 	defer engine.Close()
 
-	be := gwbackend.New(engine, metaClient)
+	be := gwbackend.New(engine, metaClient, newTestLogger())
 
 	gwCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -215,5 +220,3 @@ func TestIntegration_GatewayCreateBucket(t *testing.T) {
 		t.Fatal("expected HeadBucket on deleted bucket to fail, but it succeeded")
 	}
 }
-
-

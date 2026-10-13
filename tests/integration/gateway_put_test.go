@@ -50,7 +50,7 @@ func TestIntegration_GatewayPutObject(t *testing.T) {
 	engine := gwstorage.New(cfg, metaClient)
 	defer engine.Close()
 
-	be := gwbackend.New(engine, metaClient)
+	be := gwbackend.New(engine, metaClient, newTestLogger())
 	ctx := context.Background()
 
 	bucket := "gateway-put-bucket"

@@ -63,7 +63,7 @@ func TestIntegration_GatewayListObjectsV2(t *testing.T) {
 	engine := gwstorage.New(cfg, metaClient)
 	defer engine.Close()
 
-	be := gwbackend.New(engine, metaClient)
+	be := gwbackend.New(engine, metaClient, newTestLogger())
 	healthHandler := gwhealth.NewHandler(cfg)
 
 	gwCtx, cancel := context.WithCancel(context.Background())
