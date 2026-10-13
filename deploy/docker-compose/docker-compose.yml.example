@@ -10,7 +10,7 @@ services:
     environment:
       - NODE_ID=${METADATA_1_NODE_ID:-metadata-1}
       - GRPC_ADDR=${METADATA_1_GRPC_ADDR:-:9090}
-      - RAFT_ADDR=${METADATA_1_RAFT_ADDR:-:9091}
+      - RAFT_ADDR=${METADATA_1_RAFT_ADDR:-metadata-1:9091}
       - DATA_DIR=${METADATA_1_DATA_DIR:-/data}
       - RAFT_BOOTSTRAP=true
       - RAFT_PEERS=${RAFT_PEERS:-metadata-1=metadata-1:9091,metadata-2=metadata-2:9091,metadata-3=metadata-3:9091}
@@ -34,7 +34,7 @@ services:
     environment:
       - NODE_ID=${METADATA_2_NODE_ID:-metadata-2}
       - GRPC_ADDR=${METADATA_2_GRPC_ADDR:-:9090}
-      - RAFT_ADDR=${METADATA_2_RAFT_ADDR:-:9091}
+      - RAFT_ADDR=${METADATA_2_RAFT_ADDR:-metadata-2:9091}
       - DATA_DIR=${METADATA_2_DATA_DIR:-/data}
       - RAFT_BOOTSTRAP=false
       - RAFT_PEERS=${RAFT_PEERS:-metadata-1=metadata-1:9091,metadata-2=metadata-2:9091,metadata-3=metadata-3:9091}
@@ -59,7 +59,7 @@ services:
     environment:
       - NODE_ID=${METADATA_3_NODE_ID:-metadata-3}
       - GRPC_ADDR=${METADATA_3_GRPC_ADDR:-:9090}
-      - RAFT_ADDR=${METADATA_3_RAFT_ADDR:-:9091}
+      - RAFT_ADDR=${METADATA_3_RAFT_ADDR:-metadata-3:9091}
       - DATA_DIR=${METADATA_3_DATA_DIR:-/data}
       - RAFT_BOOTSTRAP=false
       - RAFT_PEERS=${RAFT_PEERS:-metadata-1=metadata-1:9091,metadata-2=metadata-2:9091,metadata-3=metadata-3:9091}
