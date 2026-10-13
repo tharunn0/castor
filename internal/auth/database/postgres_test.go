@@ -7,6 +7,7 @@ import (
 
 	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5"
+	"github.com/tharunn0/castor/internal/auth/config"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -100,3 +101,42 @@ func TestNewPool_DefaultTracer(t *testing.T) {
 		t.Fatal("expected non-nil default ConnConfig.Tracer")
 	}
 }
+
+func TestNewPoolWithConfig(t *testing.T) {
+	cfg := config.Config{
+		DatabaseURL:         "postgres://user:pass@localhost:5432/castor_auth?sslmode=disable",
+		DBMaxConns:          50,
+		DBMinConns:          10,
+		DBMaxConnLifetime:   2 * time.Hour,
+		DBMaxConnIdleTime:   45 * time.Minute,
+		DBHealthCheckPeriod: 2 * time.Minute,
+		DBConnectTimeout:    8 * time.Second,
+	}
+
+	pool, err := NewPoolWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("unexpected error initializing pool with config: %v", err)
+	}
+	defer pool.Close()
+
+	pCfg := pool.Config()
+	if pCfg.MaxConns != 50 {
+		t.Errorf("expected MaxConns 50, got %d", pCfg.MaxConns)
+	}
+	if pCfg.MinConns != 10 {
+		t.Errorf("expected MinConns 10, got %d", pCfg.MinConns)
+	}
+	if pCfg.MaxConnLifetime != 2*time.Hour {
+		t.Errorf("expected MaxConnLifetime 2h, got %v", pCfg.MaxConnLifetime)
+	}
+	if pCfg.MaxConnIdleTime != 45*time.Minute {
+		t.Errorf("expected MaxConnIdleTime 45m, got %v", pCfg.MaxConnIdleTime)
+	}
+	if pCfg.HealthCheckPeriod != 2*time.Minute {
+		t.Errorf("expected HealthCheckPeriod 2m, got %v", pCfg.HealthCheckPeriod)
+	}
+	if pCfg.ConnConfig.ConnectTimeout != 8*time.Second {
+		t.Errorf("expected ConnectTimeout 8s, got %v", pCfg.ConnConfig.ConnectTimeout)
+	}
+}
+

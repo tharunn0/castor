@@ -45,7 +45,7 @@ func main() {
 		"http_addr", cfg.HTTPAddr,
 	)
 
-	pool, err := database.NewPool(context.Background(), cfg.DatabaseURL,
+	pool, err := database.NewPoolWithConfig(context.Background(), cfg,
 		otelpgx.WithTracerProvider(tel.TracerProvider),
 	)
 	if err != nil {
