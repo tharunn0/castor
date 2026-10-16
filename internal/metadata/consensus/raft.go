@@ -389,4 +389,3 @@ func (r *RaftNode) Status() RaftStatus {
 
 	return status
 }
-

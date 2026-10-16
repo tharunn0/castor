@@ -229,7 +229,7 @@ func TestS3Credential_Validate(t *testing.T) {
 
 func TestGenerateAccessKeyID(t *testing.T) {
 	seen := make(map[string]bool)
-	for _ = range 100 {
+	for range 100 {
 		key, err := GenerateAccessKeyID()
 		if err != nil {
 			t.Fatalf("unexpected error generating access key id: %v", err)
@@ -252,7 +252,7 @@ func TestGenerateAccessKeyID(t *testing.T) {
 
 func TestGenerateSecretAccessKey(t *testing.T) {
 	seen := make(map[string]bool)
-	for _ = range 100 {
+	for range 100 {
 		secret, err := GenerateSecretAccessKey()
 		if err != nil {
 			t.Fatalf("unexpected error generating secret access key: %v", err)

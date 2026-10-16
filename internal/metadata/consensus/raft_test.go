@@ -180,4 +180,3 @@ func TestRaftNode_Status(t *testing.T) {
 		t.Fatalf("expected non-nil peers slice")
 	}
 }
-

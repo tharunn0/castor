@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -95,11 +96,11 @@ func New(cfg config.Config, metaClient castorv1.MetadataServiceClient) *StorageE
 func (e *StorageEngine) AddMetadataNode(addr string) {
 	e.metaMu.Lock()
 	defer e.metaMu.Unlock()
-	for _, node := range e.metaNodes {
-		if node == addr {
-			return
-		}
+
+	if slices.Contains(e.metaNodes, addr) {
+		return
 	}
+
 	e.metaNodes = append(e.metaNodes, addr)
 }
 

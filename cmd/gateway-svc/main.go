@@ -44,7 +44,7 @@ func main() {
 	metaClient := castorv1.NewMetadataServiceClient(metaConn)
 
 	engine := storage.New(cfg, metaClient)
-	defer engine.Close()
+	defer engine.Close() //nolint:staticcheck
 
 	be := backend.New(engine, metaClient, logger)
 
