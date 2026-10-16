@@ -97,6 +97,38 @@ func (f *FSM) applyRemoveChunkLocations(ctx context.Context, cmd *Command) (any,
 	return nil, f.store.DeleteChunkLocation(ctx, req.ChunkHash)
 }
 
+func (f *FSM) applyInitiateMultipart(ctx context.Context, cmd *Command) (any, error) {
+	req, err := cmd.DecodeInitiateMultipart()
+	if err != nil {
+		return nil, err
+	}
+	return f.store.InitiateMultipart(ctx, req.UploadId, req)
+}
+
+func (f *FSM) applyCommitPart(ctx context.Context, cmd *Command) (any, error) {
+	req, err := cmd.DecodeCommitPart()
+	if err != nil {
+		return nil, err
+	}
+	return f.store.CommitPart(ctx, req)
+}
+
+func (f *FSM) applyCompleteMultipart(ctx context.Context, cmd *Command) (any, error) {
+	req, err := cmd.DecodeCompleteMultipart()
+	if err != nil {
+		return nil, err
+	}
+	return f.store.CompleteMultipart(ctx, req)
+}
+
+func (f *FSM) applyAbortMultipart(ctx context.Context, cmd *Command) (any, error) {
+	req, err := cmd.DecodeAbortMultipart()
+	if err != nil {
+		return nil, err
+	}
+	return nil, f.store.AbortMultipart(ctx, req.UploadId)
+}
+
 func (f *FSM) applyCommand(ctx context.Context, cmd *Command) (any, error) {
 	switch cmd.Type {
 	case CmdCreateBucket:
@@ -107,6 +139,14 @@ func (f *FSM) applyCommand(ctx context.Context, cmd *Command) (any, error) {
 		return f.applyCommitManifest(ctx, cmd)
 	case CmdDeleteManifest:
 		return f.applyDeleteManifest(ctx, cmd)
+	case CmdInitiateMultipart:
+		return f.applyInitiateMultipart(ctx, cmd)
+	case CmdCommitPart:
+		return f.applyCommitPart(ctx, cmd)
+	case CmdCompleteMultipart:
+		return f.applyCompleteMultipart(ctx, cmd)
+	case CmdAbortMultipart:
+		return f.applyAbortMultipart(ctx, cmd)
 	case CmdUpdateChunkLocation:
 		return f.applyUpdateChunkLocation(ctx, cmd)
 	case CmdRemoveChunkLocations:

@@ -449,3 +449,186 @@ func TestFSM_SnapshotAndRestore(t *testing.T) {
 		t.Fatalf("unexpected restored manifest state: %+v", restoredManifest)
 	}
 }
+
+func TestFSM_ApplyMultipartLifecycle(t *testing.T) {
+	fsm, s := newTestFSM(t)
+	ctx := context.Background()
+
+	// 1. Create bucket
+	bucketCmd, err := NewCreateBucketCommand(&castorv1.CreateBucketMetadataRequest{
+		Bucket:  "media",
+		OwnerId: "user-1",
+	})
+	if err != nil {
+		t.Fatalf("failed to create bucket command: %v", err)
+	}
+	applyCommand(t, fsm, bucketCmd)
+
+	uploadID := "upload-fsm-lifecycle-1"
+	chunk1 := "c111111111111111111111111111111111111111111111111111111111111111"
+	chunk2 := "c222222222222222222222222222222222222222222222222222222222222222"
+
+	// 2. Initiate multipart
+	initiateCmd, err := NewInitiateMultipartCommand(&castorv1.InitiateMultipartMetaRequest{
+		Bucket:      "media",
+		Key:         "video.mp4",
+		ContentType: "video/mp4",
+		UploadId:    uploadID,
+	})
+	if err != nil {
+		t.Fatalf("failed to create initiate multipart command: %v", err)
+	}
+	res := applyCommand(t, fsm, initiateCmd)
+	if err, ok := res.(error); ok && err != nil {
+		t.Fatalf("apply initiate multipart failed: %v", err)
+	}
+
+	mp, err := s.GetMultipart(ctx, uploadID)
+	if err != nil || mp.Status != "pending" {
+		t.Fatalf("expected pending multipart record, got %+v (err: %v)", mp, err)
+	}
+
+	// 3. Commit Part 1 (4MiB)
+	part1Cmd, err := NewCommitPartCommand(&castorv1.CommitPartMetaRequest{
+		UploadId:   uploadID,
+		PartNumber: 1,
+		Size:       4194304,
+		Etag:       "etag-part-1",
+		ChunkIds:   []string{chunk1},
+		ChunkPlacements: []*castorv1.ChunkPlacement{
+			{ChunkHash: chunk1, NodeAddresses: []string{"node1:9101"}, Size: 4194304},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create commit part 1 command: %v", err)
+	}
+	if res := applyCommand(t, fsm, part1Cmd); res != nil {
+		if err, ok := res.(error); ok && err != nil {
+			t.Fatalf("apply commit part 1 failed: %v", err)
+		}
+	}
+
+	// 4. Commit Part 2 (4MiB)
+	part2Cmd, err := NewCommitPartCommand(&castorv1.CommitPartMetaRequest{
+		UploadId:   uploadID,
+		PartNumber: 2,
+		Size:       4194304,
+		Etag:       "etag-part-2",
+		ChunkIds:   []string{chunk2},
+		ChunkPlacements: []*castorv1.ChunkPlacement{
+			{ChunkHash: chunk2, NodeAddresses: []string{"node1:9101"}, Size: 4194304},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create commit part 2 command: %v", err)
+	}
+	if res := applyCommand(t, fsm, part2Cmd); res != nil {
+		if err, ok := res.(error); ok && err != nil {
+			t.Fatalf("apply commit part 2 failed: %v", err)
+		}
+	}
+
+	// Verify chunk reference counts
+	loc1, err := s.GetChunkLocation(ctx, chunk1)
+	if err != nil || loc1.RefCount != 1 {
+		t.Fatalf("expected chunk1 RefCount 1, got %+v (err: %v)", loc1, err)
+	}
+
+	// 5. Complete multipart
+	completeCmd, err := NewCompleteMultipartCommand(&castorv1.CompleteMultipartMetaRequest{
+		UploadId: uploadID,
+		Parts: []*castorv1.PartSummary{
+			{PartNumber: 1, Etag: "etag-part-1"},
+			{PartNumber: 2, Etag: "etag-part-2"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create complete multipart command: %v", err)
+	}
+	if res := applyCommand(t, fsm, completeCmd); res != nil {
+		if err, ok := res.(error); ok && err != nil {
+			t.Fatalf("apply complete multipart failed: %v", err)
+		}
+	}
+
+	// Verify final manifest
+	m, err := s.GetManifest(ctx, "media", "video.mp4")
+	if err != nil {
+		t.Fatalf("expected final manifest, got: %v", err)
+	}
+	if m.Size != 8388608 || len(m.ChunkIds) != 2 || m.Status != "committed" {
+		t.Fatalf("unexpected manifest state: %+v", m)
+	}
+
+	// Verify multipart status is completed
+	mpAfter, err := s.GetMultipart(ctx, uploadID)
+	if err != nil || mpAfter.Status != "completed" {
+		t.Fatalf("expected completed multipart status, got %+v (err: %v)", mpAfter, err)
+	}
+}
+
+func TestFSM_ApplyAbortMultipart(t *testing.T) {
+	fsm, s := newTestFSM(t)
+	ctx := context.Background()
+
+	bucketCmd, _ := NewCreateBucketCommand(&castorv1.CreateBucketMetadataRequest{
+		Bucket:  "media",
+		OwnerId: "user-1",
+	})
+	applyCommand(t, fsm, bucketCmd)
+
+	uploadID := "upload-fsm-abort-1"
+	chunk := "c33333333333333333333333333333333333333333333333333333333333333"
+
+	initiateCmd, _ := NewInitiateMultipartCommand(&castorv1.InitiateMultipartMetaRequest{
+		Bucket:   "media",
+		Key:      "temp.dat",
+		UploadId: uploadID,
+	})
+	applyCommand(t, fsm, initiateCmd)
+
+	partCmd, _ := NewCommitPartCommand(&castorv1.CommitPartMetaRequest{
+		UploadId:   uploadID,
+		PartNumber: 1,
+		Size:       1024,
+		Etag:       "etag-temp",
+		ChunkIds:   []string{chunk},
+		ChunkPlacements: []*castorv1.ChunkPlacement{
+			{ChunkHash: chunk, NodeAddresses: []string{"node1:9101"}, Size: 1024},
+		},
+	})
+	applyCommand(t, fsm, partCmd)
+
+	locBefore, err := s.GetChunkLocation(ctx, chunk)
+	if err != nil || locBefore.RefCount != 1 {
+		t.Fatalf("expected chunk RefCount 1, got %+v (err: %v)", locBefore, err)
+	}
+
+	abortCmd, err := NewAbortMultipartCommand(&castorv1.AbortMultipartMetaRequest{
+		UploadId: uploadID,
+	})
+	if err != nil {
+		t.Fatalf("failed to create abort multipart command: %v", err)
+	}
+	if res := applyCommand(t, fsm, abortCmd); res != nil {
+		if err, ok := res.(error); ok && err != nil {
+			t.Fatalf("apply abort multipart failed: %v", err)
+		}
+	}
+
+	mpAfter, err := s.GetMultipart(ctx, uploadID)
+	if err != nil || mpAfter.Status != "aborted" {
+		t.Fatalf("expected aborted multipart status, got %+v (err: %v)", mpAfter, err)
+	}
+
+	locAfter, err := s.GetChunkLocation(ctx, chunk)
+	if err != nil || locAfter.RefCount != 0 || locAfter.OrphanedAt == nil {
+		t.Fatalf("expected chunk RefCount 0 with OrphanedAt, got %+v (err: %v)", locAfter, err)
+	}
+
+	_, err = s.GetManifest(ctx, "media", "temp.dat")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected manifest to not exist, got: %v", err)
+	}
+}
+
