@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
+	"github.com/tharunn0/castor/internal/metadata/admin"
 	"github.com/tharunn0/castor/internal/metadata/config"
 	"github.com/tharunn0/castor/internal/metadata/consensus"
 	"github.com/tharunn0/castor/internal/metadata/server"
@@ -25,6 +26,7 @@ func main() {
 		"node_id", cfg.NodeID,
 		"grpc_addr", cfg.GRPCAddr,
 		"raft_addr", cfg.RaftAddr,
+		"admin_addr", cfg.AdminAddr,
 		"data_dir", cfg.DataDir,
 		"bootstrap", cfg.RaftBootstrap,
 	)
@@ -56,6 +58,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	var adminSrv *admin.Server
+	if cfg.AdminAddr != "" {
+		adminSrv = admin.New(cfg.AdminAddr, raftNode)
+		go func() {
+			logger.Info("metadata admin HTTP server listening", "addr", cfg.AdminAddr)
+			if err := adminSrv.Start(); err != nil && !errors.Is(err, net.ErrClosed) {
+				logger.Error("admin server error", "error", err)
+			}
+		}()
+	}
+
 	shutdownChan := make(chan os.Signal, 1)
 	signal.Notify(shutdownChan, os.Interrupt, syscall.SIGTERM)
 
@@ -72,6 +85,12 @@ func main() {
 		logger.Info("shutting down metadata service", "signal", sig.String())
 	case err := <-serverErrChan:
 		logger.Error("metadata gRPC server error", "error", err)
+	}
+
+	if adminSrv != nil {
+		if err := adminSrv.Shutdown(); err != nil {
+			logger.Error("error during admin server shutdown", "error", err)
+		}
 	}
 
 	grpcServer.GracefulStop()

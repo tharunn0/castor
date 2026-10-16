@@ -8,6 +8,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/raft"
@@ -309,3 +311,82 @@ func (r *RaftNode) Shutdown() error {
 func (r *RaftNode) Raft() *raft.Raft {
 	return r.raft
 }
+
+type RaftPeerStatus struct {
+	NodeID   string `json:"node_id"`
+	Address  string `json:"address"`
+	Suffrage string `json:"suffrage"`
+}
+
+type RaftStatus struct {
+	NodeID            string           `json:"node_id"`
+	Role              string           `json:"role"`
+	Term              uint64           `json:"term"`
+	LeaderID          string           `json:"leader_id"`
+	LeaderAddr        string           `json:"leader_addr"`
+	CommitIndex       uint64           `json:"commit_index"`
+	AppliedIndex      uint64           `json:"applied_index"`
+	LastLogIndex      uint64           `json:"last_log_index"`
+	LastSnapshotIndex uint64           `json:"last_snapshot_index"`
+	Peers             []RaftPeerStatus `json:"peers"`
+}
+
+func (r *RaftNode) Status() RaftStatus {
+	status := RaftStatus{
+		NodeID: r.cfg.NodeID,
+		Role:   "UNKNOWN",
+		Peers:  []RaftPeerStatus{},
+	}
+	if r.raft == nil {
+		return status
+	}
+
+	switch r.raft.State() {
+	case raft.Leader:
+		status.Role = "LEADER"
+	case raft.Follower:
+		status.Role = "FOLLOWER"
+	case raft.Candidate:
+		status.Role = "CANDIDATE"
+	case raft.Shutdown:
+		status.Role = "SHUTDOWN"
+	default:
+		status.Role = strings.ToUpper(r.raft.State().String())
+	}
+
+	status.Term = r.raft.CurrentTerm()
+	status.CommitIndex = r.raft.CommitIndex()
+	status.AppliedIndex = r.raft.AppliedIndex()
+	status.LastLogIndex = r.raft.LastIndex()
+
+	status.LeaderAddr = r.LeaderAddr()
+	status.LeaderID = r.LeaderID()
+
+	stats := r.raft.Stats()
+	if snapStr, ok := stats["last_snapshot_index"]; ok {
+		status.LastSnapshotIndex, _ = strconv.ParseUint(snapStr, 10, 64)
+	}
+
+	future := r.raft.GetConfiguration()
+	if err := future.Error(); err == nil {
+		for _, s := range future.Configuration().Servers {
+			if string(s.ID) == r.cfg.NodeID {
+				continue
+			}
+			suffrage := "Voter"
+			if s.Suffrage == raft.Nonvoter {
+				suffrage = "Nonvoter"
+			} else if s.Suffrage == raft.Staging {
+				suffrage = "Staging"
+			}
+			status.Peers = append(status.Peers, RaftPeerStatus{
+				NodeID:   string(s.ID),
+				Address:  string(s.Address),
+				Suffrage: suffrage,
+			})
+		}
+	}
+
+	return status
+}
+

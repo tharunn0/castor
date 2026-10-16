@@ -148,3 +148,36 @@ func TestRaftNode_ErrorsWhenNotLeader(t *testing.T) {
 		t.Fatalf("unexpected error message: %s", nle.Error())
 	}
 }
+
+func TestRaftNode_Status(t *testing.T) {
+	var emptyNode RaftNode
+	stEmpty := emptyNode.Status()
+	if stEmpty.Role != "UNKNOWN" {
+		t.Fatalf("expected UNKNOWN role for empty node, got %s", stEmpty.Role)
+	}
+
+	node, _, _ := newTestRaftNode(t, "node-1", "127.0.0.1:0", nil)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if node.IsLeader() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	st := node.Status()
+	if st.NodeID != "node-1" {
+		t.Fatalf("expected NodeID node-1, got %s", st.NodeID)
+	}
+	if st.Role != "LEADER" {
+		t.Fatalf("expected LEADER role, got %s", st.Role)
+	}
+	if st.LeaderID != "node-1" {
+		t.Fatalf("expected LeaderID node-1, got %s", st.LeaderID)
+	}
+	if st.Peers == nil {
+		t.Fatalf("expected non-nil peers slice")
+	}
+}
+

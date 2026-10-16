@@ -14,6 +14,7 @@ type Config struct {
 	NodeID        string
 	GRPCAddr      string
 	RaftAddr      string
+	AdminAddr     string
 	DataDir       string
 	RaftBootstrap bool
 	Peers         map[string]string // map[nodeID]raftAddr
@@ -28,6 +29,7 @@ func Load() Config {
 	nodeID := getEnv("NODE_ID", "metadata-1")
 	grpcAddr := getEnv("GRPC_ADDR", ":9090")
 	raftAddr := getEnv("RAFT_ADDR", "127.0.0.1:9091")
+	adminAddr := getEnv("ADMIN_ADDR", ":9071")
 	dataDir := getEnv("DATA_DIR", "data/metadata")
 	bootstrapStr := getEnv("RAFT_BOOTSTRAP", "true")
 	raftLogOutputValue := getEnv("RAFT_LOG_OUTPUT", "stderr") // stderr, discard
@@ -62,6 +64,7 @@ func Load() Config {
 		NodeID:        nodeID,
 		GRPCAddr:      grpcAddr,
 		RaftAddr:      raftAddr,
+		AdminAddr:     adminAddr,
 		DataDir:       dataDir,
 		RaftBootstrap: bootstrap,
 		Peers:         peers,
