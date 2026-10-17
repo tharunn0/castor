@@ -1104,3 +1104,229 @@ func TestCastorBackend_GetBucketAcl(t *testing.T) {
 		t.Fatalf("expected owner full control grantee, got %+v", customAcl.Grantees)
 	}
 }
+
+func TestCastorBackend_MultipartUpload(t *testing.T) {
+	node1Addr, cleanup1 := startTestDataNode(t, "data-be-mp-1")
+	defer cleanup1()
+	node2Addr, cleanup2 := startTestDataNode(t, "data-be-mp-2")
+	defer cleanup2()
+
+	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-be-mp")
+	defer metaCleanup()
+
+	cfg := config.Config{
+		ChunkSize:            1024,
+		WriteQuorum:          2,
+		MaxConcurrentUploads: 4,
+		DataNodes:            []string{node1Addr, node2Addr},
+	}
+
+	engine := storage.New(cfg, metaClient)
+	defer engine.Close()
+
+	be := New(engine, metaClient, newTestLogger())
+	ctx := context.Background()
+
+	// 1. Validation for CreateMultipartUpload
+	emptyStr := ""
+	validBucket := "mp-be-bucket"
+	validKey := "test-mp.dat"
+	cType := "application/octet-stream"
+
+	_, err := be.CreateMultipartUpload(ctx, s3response.CreateMultipartUploadInput{
+		Bucket: &emptyStr,
+		Key:    &validKey,
+	})
+	if err == nil {
+		t.Fatal("expected error on empty bucket")
+	}
+
+	_, err = be.CreateMultipartUpload(ctx, s3response.CreateMultipartUploadInput{
+		Bucket: &validBucket,
+		Key:    &emptyStr,
+	})
+	if err == nil {
+		t.Fatal("expected error on empty key")
+	}
+
+	// Non-existent bucket
+	_, err = be.CreateMultipartUpload(ctx, s3response.CreateMultipartUploadInput{
+		Bucket: &validBucket,
+		Key:    &validKey,
+	})
+	if err == nil {
+		t.Fatal("expected error on non-existent bucket")
+	}
+
+	// 2. Create bucket
+	if err := be.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: &validBucket}, nil); err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	// 3. Initiate multipart upload
+	createRes, err := be.CreateMultipartUpload(ctx, s3response.CreateMultipartUploadInput{
+		Bucket:      &validBucket,
+		Key:         &validKey,
+		ContentType: &cType,
+	})
+	if err != nil {
+		t.Fatalf("CreateMultipartUpload failed: %v", err)
+	}
+	if createRes.UploadId == "" {
+		t.Fatal("expected non-empty UploadId")
+	}
+	uploadID := createRes.UploadId
+
+	// 4. UploadPart validation
+	part0 := int32(0)
+	_, err = be.UploadPart(ctx, &s3.UploadPartInput{
+		Bucket:     &validBucket,
+		Key:        &validKey,
+		UploadId:   &uploadID,
+		PartNumber: &part0,
+		Body:       strings.NewReader("hello"),
+	})
+	if err == nil {
+		t.Fatal("expected error on partNumber 0")
+	}
+
+	unknownUpload := "unknown-upload-id"
+	part1 := int32(1)
+	_, err = be.UploadPart(ctx, &s3.UploadPartInput{
+		Bucket:     &validBucket,
+		Key:        &validKey,
+		UploadId:   &unknownUpload,
+		PartNumber: &part1,
+		Body:       strings.NewReader("hello"),
+	})
+	if err == nil {
+		t.Fatal("expected error on unknown uploadID")
+	}
+
+	// 5. Upload Part 1 (2500 bytes) and Part 2 (1500 bytes)
+	part1Data := make([]byte, 2500)
+	_, _ = rand.Read(part1Data)
+	p1Len := int64(len(part1Data))
+
+	p1Out, err := be.UploadPart(ctx, &s3.UploadPartInput{
+		Bucket:        &validBucket,
+		Key:           &validKey,
+		UploadId:      &uploadID,
+		PartNumber:    &part1,
+		Body:          bytes.NewReader(part1Data),
+		ContentLength: &p1Len,
+	})
+	if err != nil {
+		t.Fatalf("UploadPart 1 failed: %v", err)
+	}
+	if p1Out.ETag == nil || !strings.HasPrefix(*p1Out.ETag, "\"") || !strings.HasSuffix(*p1Out.ETag, "\"") {
+		t.Fatalf("expected quoted ETag for part 1, got %v", p1Out.ETag)
+	}
+
+	part2 := int32(2)
+	part2Data := make([]byte, 1500)
+	_, _ = rand.Read(part2Data)
+	p2Len := int64(len(part2Data))
+
+	p2Out, err := be.UploadPart(ctx, &s3.UploadPartInput{
+		Bucket:        &validBucket,
+		Key:           &validKey,
+		UploadId:      &uploadID,
+		PartNumber:    &part2,
+		Body:          bytes.NewReader(part2Data),
+		ContentLength: &p2Len,
+	})
+	if err != nil {
+		t.Fatalf("UploadPart 2 failed: %v", err)
+	}
+	if p2Out.ETag == nil || !strings.HasPrefix(*p2Out.ETag, "\"") || !strings.HasSuffix(*p2Out.ETag, "\"") {
+		t.Fatalf("expected quoted ETag for part 2, got %v", p2Out.ETag)
+	}
+
+	// 6. CompleteMultipartUpload validation & mismatched part
+	wrongETag := "\"wrongetag\""
+	_, _, err = be.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
+		Bucket:   &validBucket,
+		Key:      &validKey,
+		UploadId: &uploadID,
+		MultipartUpload: &types.CompletedMultipartUpload{
+			Parts: []types.CompletedPart{
+				{PartNumber: &part1, ETag: &wrongETag},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error on mismatched part etag")
+	}
+
+	// Complete successfully
+	completeRes, _, err := be.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
+		Bucket:   &validBucket,
+		Key:      &validKey,
+		UploadId: &uploadID,
+		MultipartUpload: &types.CompletedMultipartUpload{
+			Parts: []types.CompletedPart{
+				{PartNumber: &part1, ETag: p1Out.ETag},
+				{PartNumber: &part2, ETag: p2Out.ETag},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CompleteMultipartUpload failed: %v", err)
+	}
+	if completeRes.ETag == nil || !strings.HasPrefix(*completeRes.ETag, "\"") {
+		t.Fatalf("expected quoted composite ETag, got %v", completeRes.ETag)
+	}
+
+	// 7. Verify GetObject retrieves the complete reconstructed object
+	getOut, err := be.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: &validBucket,
+		Key:    &validKey,
+	})
+	if err != nil {
+		t.Fatalf("GetObject failed: %v", err)
+	}
+	defer getOut.Body.Close()
+
+	if *getOut.ContentLength != 4000 {
+		t.Fatalf("expected length 4000, got %d", *getOut.ContentLength)
+	}
+	downloaded, err := io.ReadAll(getOut.Body)
+	if err != nil {
+		t.Fatalf("reading object body failed: %v", err)
+	}
+	expectedAll := append(part1Data, part2Data...)
+	if !bytes.Equal(downloaded, expectedAll) {
+		t.Fatal("downloaded object content does not match multipart source data")
+	}
+
+	// 8. AbortMultipartUpload
+	abortKey := "abort-test.bin"
+	abortInit, err := be.CreateMultipartUpload(ctx, s3response.CreateMultipartUploadInput{
+		Bucket: &validBucket,
+		Key:    &abortKey,
+	})
+	if err != nil {
+		t.Fatalf("CreateMultipartUpload for abort failed: %v", err)
+	}
+	err = be.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
+		Bucket:   &validBucket,
+		Key:      &abortKey,
+		UploadId: &abortInit.UploadId,
+	})
+	if err != nil {
+		t.Fatalf("AbortMultipartUpload failed: %v", err)
+	}
+
+	// Uploading part to aborted upload fails
+	_, err = be.UploadPart(ctx, &s3.UploadPartInput{
+		Bucket:     &validBucket,
+		Key:        &abortKey,
+		UploadId:   &abortInit.UploadId,
+		PartNumber: &part1,
+		Body:       strings.NewReader("data"),
+	})
+	if err == nil {
+		t.Fatal("expected error on UploadPart to aborted upload")
+	}
+}

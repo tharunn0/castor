@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
 	"github.com/tharunn0/castor/internal/gateway/config"
 	"google.golang.org/grpc"
@@ -28,6 +29,8 @@ var (
 	ErrBucketAlreadyExists = errors.New("bucket already exists")
 	ErrBucketNotEmpty      = errors.New("bucket not empty")
 	ErrObjectNotFound      = errors.New("object not found")
+	ErrNoSuchUpload        = errors.New("multipart upload not found")
+	ErrInvalidPart         = errors.New("invalid or mismatched part")
 )
 
 type ObjectInfo struct {
@@ -808,4 +811,223 @@ func (e *StorageEngine) ListObjects(ctx context.Context, bucket, prefix, delimit
 	}
 
 	return resp, nil
+}
+
+func (e *StorageEngine) InitiateMultipartUpload(ctx context.Context, bucket, key, contentType string) (string, error) {
+	if bucket == "" {
+		return "", errors.New("bucket name is required")
+	}
+	if key == "" {
+		return "", errors.New("object key is required")
+	}
+
+	exists, err := e.CheckBucketExists(ctx, bucket)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return "", ErrBucketNotFound
+	}
+
+	uploadID := uuid.New().String()
+
+	err = e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+		_, err := client.InitiateMultipart(ctx, &castorv1.InitiateMultipartMetaRequest{
+			Bucket:      bucket,
+			Key:         key,
+			ContentType: contentType,
+			UploadId:    uploadID,
+		})
+		return err
+	})
+	if err != nil {
+		if s, ok := status.FromError(err); ok && s.Code() == codes.NotFound {
+			return "", ErrBucketNotFound
+		}
+		return "", err
+	}
+
+	return uploadID, nil
+}
+
+func (e *StorageEngine) UploadPart(ctx context.Context, bucket, key, uploadID string, partNumber int32, reader io.Reader, size int64) (string, error) {
+	if bucket == "" {
+		return "", errors.New("bucket name is required")
+	}
+	if key == "" {
+		return "", errors.New("object key is required")
+	}
+	if uploadID == "" {
+		return "", errors.New("upload_id is required")
+	}
+	if partNumber <= 0 {
+		return "", errors.New("part_number must be greater than zero")
+	}
+
+	var chunkIDs []string
+	var placements []*castorv1.ChunkPlacement
+	var totalSize int64
+	partHasher := sha256.New()
+
+	if reader != nil {
+		bufPtr := e.pool.Acquire()
+		defer e.pool.Release(bufPtr)
+		buf := *bufPtr
+
+		for {
+			n, readErr := io.ReadFull(reader, buf)
+			if n > 0 {
+				chunkBytes := make([]byte, n)
+				copy(chunkBytes, buf[:n])
+
+				h := sha256.Sum256(chunkBytes)
+				chunkHash := hex.EncodeToString(h[:])
+				partHasher.Write(chunkBytes)
+
+				targets, err := e.placement.SelectNodes(len(e.cfg.DataNodes))
+				if err != nil {
+					return "", err
+				}
+
+				successfulNodes, err := e.placement.WriteChunkQuorum(ctx, chunkHash, chunkBytes, targets)
+				if err != nil {
+					return "", err
+				}
+
+				chunkIDs = append(chunkIDs, chunkHash)
+				placements = append(placements, &castorv1.ChunkPlacement{
+					ChunkHash:     chunkHash,
+					NodeAddresses: successfulNodes,
+					Size:          int64(n),
+				})
+				totalSize += int64(n)
+			}
+
+			if readErr != nil {
+				if errors.Is(readErr, io.EOF) || errors.Is(readErr, io.ErrUnexpectedEOF) {
+					break
+				}
+				return "", readErr
+			}
+		}
+	}
+
+	etag := hex.EncodeToString(partHasher.Sum(nil))
+
+	err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+		_, err := client.CommitPart(ctx, &castorv1.CommitPartMetaRequest{
+			UploadId:        uploadID,
+			PartNumber:      partNumber,
+			Size:            totalSize,
+			Etag:            etag,
+			ChunkIds:        chunkIDs,
+			ChunkPlacements: placements,
+		})
+		return err
+	})
+	if err != nil {
+		if s, ok := status.FromError(err); ok {
+			switch s.Code() {
+			case codes.NotFound, codes.FailedPrecondition:
+				return "", ErrNoSuchUpload
+			case codes.InvalidArgument:
+				return "", ErrInvalidPart
+			}
+		}
+		return "", err
+	}
+
+	return etag, nil
+}
+
+func (e *StorageEngine) CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []*castorv1.PartSummary) (*ObjectInfo, error) {
+	if bucket == "" {
+		return nil, errors.New("bucket name is required")
+	}
+	if key == "" {
+		return nil, errors.New("object key is required")
+	}
+	if uploadID == "" {
+		return nil, errors.New("upload_id is required")
+	}
+
+	err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+		_, err := client.CompleteMultipart(ctx, &castorv1.CompleteMultipartMetaRequest{
+			UploadId: uploadID,
+			Parts:    parts,
+		})
+		return err
+	})
+	if err != nil {
+		if s, ok := status.FromError(err); ok {
+			switch s.Code() {
+			case codes.NotFound, codes.FailedPrecondition:
+				return nil, ErrNoSuchUpload
+			case codes.InvalidArgument:
+				return nil, ErrInvalidPart
+			}
+		}
+		return nil, err
+	}
+
+	var manifestResp *castorv1.GetManifestResponse
+	err = e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+		var err error
+		manifestResp, err = client.GetManifest(ctx, &castorv1.GetManifestRequest{
+			Bucket: bucket,
+			Key:    key,
+		})
+		return err
+	})
+	if err != nil {
+		if s, ok := status.FromError(err); ok && s.Code() == codes.NotFound {
+			return nil, ErrObjectNotFound
+		}
+		return nil, err
+	}
+
+	objInfo := &ObjectInfo{
+		Bucket:      manifestResp.GetBucket(),
+		Key:         manifestResp.GetKey(),
+		Size:        manifestResp.GetSize(),
+		ETag:        manifestResp.GetEtag(),
+		ContentType: manifestResp.GetContentType(),
+	}
+	if manifestResp.GetUpdatedAt() != nil {
+		objInfo.UpdatedAt = manifestResp.GetUpdatedAt().AsTime()
+	} else if manifestResp.GetCreatedAt() != nil {
+		objInfo.UpdatedAt = manifestResp.GetCreatedAt().AsTime()
+	}
+
+	return objInfo, nil
+}
+
+func (e *StorageEngine) AbortMultipartUpload(ctx context.Context, bucket, key, uploadID string) error {
+	if bucket == "" {
+		return errors.New("bucket name is required")
+	}
+	if key == "" {
+		return errors.New("object key is required")
+	}
+	if uploadID == "" {
+		return errors.New("upload_id is required")
+	}
+
+	err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+		_, err := client.AbortMultipart(ctx, &castorv1.AbortMultipartMetaRequest{
+			UploadId: uploadID,
+		})
+		return err
+	})
+	if err != nil {
+		if s, ok := status.FromError(err); ok {
+			switch s.Code() {
+			case codes.NotFound, codes.FailedPrecondition:
+				return ErrNoSuchUpload
+			}
+		}
+		return err
+	}
+
+	return nil
 }

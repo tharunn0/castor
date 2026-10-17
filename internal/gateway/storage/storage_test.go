@@ -809,3 +809,143 @@ func TestStorageEngine_ListObjects(t *testing.T) {
 		t.Fatalf("expected 2 manifests on first page, got %d", len(pageResp.GetManifests()))
 	}
 }
+
+func TestStorageEngine_MultipartUpload(t *testing.T) {
+	node1Addr, cleanup1 := startTestDataNode(t, "data-mp-1")
+	defer cleanup1()
+	node2Addr, cleanup2 := startTestDataNode(t, "data-mp-2")
+	defer cleanup2()
+	node3Addr, cleanup3 := startTestDataNode(t, "data-mp-3")
+	defer cleanup3()
+
+	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-mp")
+	defer metaCleanup()
+
+	cfg := config.Config{
+		ChunkSize:            1024,
+		WriteQuorum:          2,
+		MaxConcurrentUploads: 4,
+		DataNodes:            []string{node1Addr, node2Addr, node3Addr},
+	}
+
+	engine := New(cfg, metaClient)
+	defer engine.Close()
+
+	ctx := context.Background()
+
+	// 1. Validation & non-existent bucket
+	if _, err := engine.InitiateMultipartUpload(ctx, "", "k", "text/plain"); err == nil {
+		t.Fatal("expected error on empty bucket")
+	}
+	if _, err := engine.InitiateMultipartUpload(ctx, "b", "", "text/plain"); err == nil {
+		t.Fatal("expected error on empty key")
+	}
+	if _, err := engine.InitiateMultipartUpload(ctx, "missing-bucket", "k", "text/plain"); !errors.Is(err, ErrBucketNotFound) {
+		t.Fatalf("expected ErrBucketNotFound, got %v", err)
+	}
+
+	// 2. Create bucket
+	bucketName := "mp-bucket"
+	if err := engine.CreateBucket(ctx, bucketName, "admin", nil); err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	// 3. Initiate multipart upload
+	uploadID, err := engine.InitiateMultipartUpload(ctx, bucketName, "large-file.bin", "application/octet-stream")
+	if err != nil {
+		t.Fatalf("InitiateMultipartUpload failed: %v", err)
+	}
+	if uploadID == "" {
+		t.Fatal("expected non-empty uploadID")
+	}
+
+	// 4. UploadPart validation
+	if _, err := engine.UploadPart(ctx, bucketName, "large-file.bin", uploadID, 0, strings.NewReader("hi"), 2); err == nil {
+		t.Fatal("expected error on partNumber <= 0")
+	}
+	if _, err := engine.UploadPart(ctx, bucketName, "large-file.bin", "unknown-upload", 1, strings.NewReader("hi"), 2); !errors.Is(err, ErrNoSuchUpload) {
+		t.Fatalf("expected ErrNoSuchUpload on unknown uploadID, got %v", err)
+	}
+
+	// 5. Upload Part 1 (2500 bytes) and Part 2 (1500 bytes)
+	part1Data := make([]byte, 2500)
+	_, _ = rand.Read(part1Data)
+	part1ETag, err := engine.UploadPart(ctx, bucketName, "large-file.bin", uploadID, 1, bytes.NewReader(part1Data), int64(len(part1Data)))
+	if err != nil {
+		t.Fatalf("UploadPart 1 failed: %v", err)
+	}
+	if part1ETag == "" {
+		t.Fatal("expected non-empty part1ETag")
+	}
+
+	part2Data := make([]byte, 1500)
+	_, _ = rand.Read(part2Data)
+	part2ETag, err := engine.UploadPart(ctx, bucketName, "large-file.bin", uploadID, 2, bytes.NewReader(part2Data), int64(len(part2Data)))
+	if err != nil {
+		t.Fatalf("UploadPart 2 failed: %v", err)
+	}
+	if part2ETag == "" {
+		t.Fatal("expected non-empty part2ETag")
+	}
+
+	// 6. CompleteMultipartUpload with mismatched part ETag -> ErrInvalidPart
+	badParts := []*castorv1.PartSummary{
+		{PartNumber: 1, Etag: "wrong-etag"},
+	}
+	if _, err := engine.CompleteMultipartUpload(ctx, bucketName, "large-file.bin", uploadID, badParts); !errors.Is(err, ErrInvalidPart) {
+		t.Fatalf("expected ErrInvalidPart on mismatched etag, got %v", err)
+	}
+
+	// 7. CompleteMultipartUpload success
+	goodParts := []*castorv1.PartSummary{
+		{PartNumber: 1, Etag: part1ETag},
+		{PartNumber: 2, Etag: part2ETag},
+	}
+	objInfo, err := engine.CompleteMultipartUpload(ctx, bucketName, "large-file.bin", uploadID, goodParts)
+	if err != nil {
+		t.Fatalf("CompleteMultipartUpload failed: %v", err)
+	}
+	if objInfo.Size != 4000 {
+		t.Fatalf("expected object size 4000, got %d", objInfo.Size)
+	}
+	if objInfo.ETag == "" {
+		t.Fatal("expected non-empty composite ETag")
+	}
+
+	// 8. Verify object retrieval via GetObject matches combined data
+	rc, info, err := engine.GetObject(ctx, bucketName, "large-file.bin")
+	if err != nil {
+		t.Fatalf("GetObject failed: %v", err)
+	}
+	defer rc.Close()
+
+	if info.Size != 4000 {
+		t.Fatalf("expected size 4000, got %d", info.Size)
+	}
+	downloaded, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("failed reading object body: %v", err)
+	}
+	expectedData := append(part1Data, part2Data...)
+	if !bytes.Equal(downloaded, expectedData) {
+		t.Fatal("downloaded payload does not match expected multipart data")
+	}
+
+	// 9. AbortMultipartUpload lifecycle
+	abortUploadID, err := engine.InitiateMultipartUpload(ctx, bucketName, "abort-file.bin", "text/plain")
+	if err != nil {
+		t.Fatalf("InitiateMultipartUpload for abort failed: %v", err)
+	}
+	_, err = engine.UploadPart(ctx, bucketName, "abort-file.bin", abortUploadID, 1, strings.NewReader("temporary data"), 14)
+	if err != nil {
+		t.Fatalf("UploadPart for abort session failed: %v", err)
+	}
+	if err := engine.AbortMultipartUpload(ctx, bucketName, "abort-file.bin", abortUploadID); err != nil {
+		t.Fatalf("AbortMultipartUpload failed: %v", err)
+	}
+
+	// Completing an aborted upload fails with ErrNoSuchUpload
+	if _, err := engine.CompleteMultipartUpload(ctx, bucketName, "abort-file.bin", abortUploadID, nil); !errors.Is(err, ErrNoSuchUpload) {
+		t.Fatalf("expected ErrNoSuchUpload when completing aborted upload, got %v", err)
+	}
+}

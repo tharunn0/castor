@@ -631,4 +631,3 @@ func TestFSM_ApplyAbortMultipart(t *testing.T) {
 		t.Fatalf("expected manifest to not exist, got: %v", err)
 	}
 }
-

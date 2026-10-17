@@ -617,3 +617,148 @@ func (b *CastorBackend) ListObjects(ctx context.Context, input *s3.ListObjectsIn
 
 	return res, nil
 }
+
+func (b *CastorBackend) CreateMultipartUpload(ctx context.Context, input s3response.CreateMultipartUploadInput) (s3response.InitiateMultipartUploadResult, error) {
+	if input.Bucket == nil || *input.Bucket == "" {
+		return s3response.InitiateMultipartUploadResult{}, s3err.GetAPIError(s3err.ErrInvalidBucketName)
+	}
+	if input.Key == nil || *input.Key == "" {
+		return s3response.InitiateMultipartUploadResult{}, s3err.GetAPIError(s3err.ErrNoSuchKey)
+	}
+
+	contentType := "application/octet-stream"
+	if input.ContentType != nil && *input.ContentType != "" {
+		contentType = *input.ContentType
+	}
+
+	uploadID, err := b.engine.InitiateMultipartUpload(ctx, *input.Bucket, *input.Key, contentType)
+	if err != nil {
+		if errors.Is(err, storage.ErrBucketNotFound) {
+			return s3response.InitiateMultipartUploadResult{}, s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
+		}
+		return s3response.InitiateMultipartUploadResult{}, err
+	}
+
+	return s3response.InitiateMultipartUploadResult{
+		Bucket:   *input.Bucket,
+		Key:      *input.Key,
+		UploadId: uploadID,
+	}, nil
+}
+
+func (b *CastorBackend) UploadPart(ctx context.Context, input *s3.UploadPartInput) (*s3.UploadPartOutput, error) {
+	if input == nil || input.Bucket == nil || *input.Bucket == "" {
+		return nil, s3err.GetAPIError(s3err.ErrInvalidBucketName)
+	}
+	if input.Key == nil || *input.Key == "" {
+		return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
+	}
+	if input.UploadId == nil || *input.UploadId == "" {
+		return nil, s3err.GetAPIError(s3err.ErrNoSuchUpload)
+	}
+	if input.PartNumber == nil || *input.PartNumber <= 0 {
+		return nil, s3err.GetAPIError(s3err.ErrInvalidPart)
+	}
+
+	var size int64 = -1
+	if input.ContentLength != nil {
+		size = *input.ContentLength
+	}
+
+	etag, err := b.engine.UploadPart(ctx, *input.Bucket, *input.Key, *input.UploadId, *input.PartNumber, input.Body, size)
+	if err != nil {
+		if errors.Is(err, storage.ErrNoSuchUpload) {
+			return nil, s3err.GetAPIError(s3err.ErrNoSuchUpload)
+		}
+		if errors.Is(err, storage.ErrBucketNotFound) {
+			return nil, s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
+		}
+		if errors.Is(err, storage.ErrInvalidPart) {
+			return nil, s3err.GetAPIError(s3err.ErrInvalidPart)
+		}
+		return nil, err
+	}
+
+	quotedETag := fmt.Sprintf("%q", etag)
+	return &s3.UploadPartOutput{
+		ETag: aws.String(quotedETag),
+	}, nil
+}
+
+func (b *CastorBackend) CompleteMultipartUpload(ctx context.Context, input *s3.CompleteMultipartUploadInput) (s3response.CompleteMultipartUploadResult, string, error) {
+	if input == nil || input.Bucket == nil || *input.Bucket == "" {
+		return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrInvalidBucketName)
+	}
+	if input.Key == nil || *input.Key == "" {
+		return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrNoSuchKey)
+	}
+	if input.UploadId == nil || *input.UploadId == "" {
+		return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrNoSuchUpload)
+	}
+	if input.MultipartUpload == nil {
+		return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrInvalidPart)
+	}
+
+	parts := make([]*castorv1.PartSummary, 0, len(input.MultipartUpload.Parts))
+	for _, p := range input.MultipartUpload.Parts {
+		var partNum int32
+		if p.PartNumber != nil {
+			partNum = *p.PartNumber
+		}
+		var pETag string
+		if p.ETag != nil {
+			pETag = strings.Trim(*p.ETag, "\"")
+		}
+		parts = append(parts, &castorv1.PartSummary{
+			PartNumber: partNum,
+			Etag:       pETag,
+		})
+	}
+
+	objInfo, err := b.engine.CompleteMultipartUpload(ctx, *input.Bucket, *input.Key, *input.UploadId, parts)
+	if err != nil {
+		if errors.Is(err, storage.ErrNoSuchUpload) {
+			return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrNoSuchUpload)
+		}
+		if errors.Is(err, storage.ErrInvalidPart) {
+			return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrInvalidPart)
+		}
+		if errors.Is(err, storage.ErrBucketNotFound) {
+			return s3response.CompleteMultipartUploadResult{}, "", s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
+		}
+		return s3response.CompleteMultipartUploadResult{}, "", err
+	}
+
+	quotedETag := fmt.Sprintf("%q", objInfo.ETag)
+	res := s3response.CompleteMultipartUploadResult{
+		Bucket: input.Bucket,
+		Key:    input.Key,
+		ETag:   aws.String(quotedETag),
+	}
+	return res, "", nil
+}
+
+func (b *CastorBackend) AbortMultipartUpload(ctx context.Context, input *s3.AbortMultipartUploadInput) error {
+	if input == nil || input.Bucket == nil || *input.Bucket == "" {
+		return s3err.GetAPIError(s3err.ErrInvalidBucketName)
+	}
+	if input.Key == nil || *input.Key == "" {
+		return s3err.GetAPIError(s3err.ErrNoSuchKey)
+	}
+	if input.UploadId == nil || *input.UploadId == "" {
+		return s3err.GetAPIError(s3err.ErrNoSuchUpload)
+	}
+
+	err := b.engine.AbortMultipartUpload(ctx, *input.Bucket, *input.Key, *input.UploadId)
+	if err != nil {
+		if errors.Is(err, storage.ErrNoSuchUpload) {
+			return s3err.GetAPIError(s3err.ErrNoSuchUpload)
+		}
+		if errors.Is(err, storage.ErrBucketNotFound) {
+			return s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
+		}
+		return err
+	}
+
+	return nil
+}
