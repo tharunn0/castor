@@ -344,3 +344,246 @@ func TestServer_NodeDiscoveryOperations(t *testing.T) {
 		t.Fatalf("expected 2 active nodes, got %d", len(nodesRes.GetNodes()))
 	}
 }
+
+func TestServer_MultipartOperations(t *testing.T) {
+	client, _, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// 1. Validation failures for InitiateMultipart
+	_, err := client.InitiateMultipart(ctx, &castorv1.InitiateMultipartMetaRequest{
+		Bucket: "",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument on empty bucket, got: %v", err)
+	}
+
+	_, err = client.InitiateMultipart(ctx, &castorv1.InitiateMultipartMetaRequest{
+		Bucket: "b1",
+		Key:    "",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument on empty key, got: %v", err)
+	}
+
+	_, err = client.InitiateMultipart(ctx, &castorv1.InitiateMultipartMetaRequest{
+		Bucket: "b1",
+		Key:    "k1",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument on empty upload_id, got: %v", err)
+	}
+
+	// 2. Initiate on non-existent bucket -> NotFound
+	_, err = client.InitiateMultipart(ctx, &castorv1.InitiateMultipartMetaRequest{
+		Bucket:   "missing-bucket",
+		Key:      "photo.jpg",
+		UploadId: "upload-1",
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("expected NotFound on missing bucket, got: %v", err)
+	}
+
+	// 3. Create bucket and initiate multipart
+	_, err = client.CreateBucket(ctx, &castorv1.CreateBucketMetadataRequest{
+		Bucket:  "media",
+		OwnerId: "user-1",
+	})
+	if err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	initResp, err := client.InitiateMultipart(ctx, &castorv1.InitiateMultipartMetaRequest{
+		Bucket:      "media",
+		Key:         "video.mp4",
+		ContentType: "video/mp4",
+		UploadId:    "upload-vid-1",
+	})
+	if err != nil {
+		t.Fatalf("InitiateMultipart failed: %v", err)
+	}
+	if initResp.GetUploadId() != "upload-vid-1" {
+		t.Fatalf("expected upload_id upload-vid-1, got %q", initResp.GetUploadId())
+	}
+	if initResp.GetCreatedAt() == nil {
+		t.Fatal("expected non-nil CreatedAt")
+	}
+
+	// 4. CommitPart validation
+	_, err = client.CommitPart(ctx, &castorv1.CommitPartMetaRequest{
+		UploadId: "",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument on empty upload_id, got: %v", err)
+	}
+
+	_, err = client.CommitPart(ctx, &castorv1.CommitPartMetaRequest{
+		UploadId:   "upload-vid-1",
+		PartNumber: 0,
+		Etag:       "etag1",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument on part_number <= 0, got: %v", err)
+	}
+
+	_, err = client.CommitPart(ctx, &castorv1.CommitPartMetaRequest{
+		UploadId:   "upload-vid-1",
+		PartNumber: 1,
+		Etag:       "",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument on empty etag, got: %v", err)
+	}
+
+	// CommitPart on unknown upload
+	_, err = client.CommitPart(ctx, &castorv1.CommitPartMetaRequest{
+		UploadId:   "unknown-upload",
+		PartNumber: 1,
+		Etag:       "etag1",
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("expected NotFound on unknown upload, got: %v", err)
+	}
+
+	// 5. Commit Part 1 and Part 2
+	part1Resp, err := client.CommitPart(ctx, &castorv1.CommitPartMetaRequest{
+		UploadId:   "upload-vid-1",
+		PartNumber: 1,
+		Size:       5000000,
+		Etag:       "part1-hash",
+		ChunkIds:   []string{"chunk-vid-1"},
+		ChunkPlacements: []*castorv1.ChunkPlacement{
+			{
+				ChunkHash:     "chunk-vid-1",
+				NodeAddresses: []string{"node-1:9090", "node-2:9090"},
+				Size:          5000000,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CommitPart 1 failed: %v", err)
+	}
+	if !part1Resp.GetCommitted() || part1Resp.GetEtag() != "part1-hash" {
+		t.Fatalf("unexpected part 1 response: %+v", part1Resp)
+	}
+
+	part2Resp, err := client.CommitPart(ctx, &castorv1.CommitPartMetaRequest{
+		UploadId:   "upload-vid-1",
+		PartNumber: 2,
+		Size:       6000000,
+		Etag:       "part2-hash",
+		ChunkIds:   []string{"chunk-vid-2"},
+		ChunkPlacements: []*castorv1.ChunkPlacement{
+			{
+				ChunkHash:     "chunk-vid-2",
+				NodeAddresses: []string{"node-1:9090", "node-2:9090"},
+				Size:          6000000,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CommitPart 2 failed: %v", err)
+	}
+	if !part2Resp.GetCommitted() || part2Resp.GetEtag() != "part2-hash" {
+		t.Fatalf("unexpected part 2 response: %+v", part2Resp)
+	}
+
+	// 6. CompleteMultipart validation
+	_, err = client.CompleteMultipart(ctx, &castorv1.CompleteMultipartMetaRequest{
+		UploadId: "",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument on empty upload_id, got: %v", err)
+	}
+
+	// Complete with mismatched parts -> InvalidArgument
+	_, err = client.CompleteMultipart(ctx, &castorv1.CompleteMultipartMetaRequest{
+		UploadId: "upload-vid-1",
+		Parts: []*castorv1.PartSummary{
+			{PartNumber: 1, Etag: "wrong-etag"},
+		},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument on mismatched part etag, got: %v", err)
+	}
+
+	// Complete successfully
+	completeResp, err := client.CompleteMultipart(ctx, &castorv1.CompleteMultipartMetaRequest{
+		UploadId: "upload-vid-1",
+		Parts: []*castorv1.PartSummary{
+			{PartNumber: 1, Etag: "part1-hash"},
+			{PartNumber: 2, Etag: "part2-hash"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CompleteMultipart failed: %v", err)
+	}
+	if !completeResp.GetCommitted() {
+		t.Fatal("expected committed=true")
+	}
+
+	// Verify committed manifest exists and size is 11000000
+	manifest, err := client.GetManifest(ctx, &castorv1.GetManifestRequest{
+		Bucket: "media",
+		Key:    "video.mp4",
+	})
+	if err != nil {
+		t.Fatalf("GetManifest failed: %v", err)
+	}
+	if manifest.GetSize() != 11000000 {
+		t.Fatalf("expected size 11000000, got %d", manifest.GetSize())
+	}
+	if len(manifest.GetChunks()) != 2 {
+		t.Fatalf("expected 2 chunks, got %d", len(manifest.GetChunks()))
+	}
+
+	// 7. CommitPart on already completed upload -> FailedPrecondition
+	_, err = client.CommitPart(ctx, &castorv1.CommitPartMetaRequest{
+		UploadId:   "upload-vid-1",
+		PartNumber: 3,
+		Etag:       "part3-hash",
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition on completed upload, got: %v", err)
+	}
+
+	// 8. Test AbortMultipart
+	initAbort, err := client.InitiateMultipart(ctx, &castorv1.InitiateMultipartMetaRequest{
+		Bucket:   "media",
+		Key:      "discard.tmp",
+		UploadId: "upload-abort-1",
+	})
+	if err != nil {
+		t.Fatalf("InitiateMultipart for abort test failed: %v", err)
+	}
+
+	_, err = client.CommitPart(ctx, &castorv1.CommitPartMetaRequest{
+		UploadId:   initAbort.GetUploadId(),
+		PartNumber: 1,
+		Size:       1024,
+		Etag:       "p1",
+		ChunkIds:   []string{"c1"},
+	})
+	if err != nil {
+		t.Fatalf("CommitPart before abort failed: %v", err)
+	}
+
+	abortResp, err := client.AbortMultipart(ctx, &castorv1.AbortMultipartMetaRequest{
+		UploadId: initAbort.GetUploadId(),
+	})
+	if err != nil {
+		t.Fatalf("AbortMultipart failed: %v", err)
+	}
+	if !abortResp.GetAborted() {
+		t.Fatal("expected aborted=true")
+	}
+
+	// Attempt to complete aborted upload -> FailedPrecondition
+	_, err = client.CompleteMultipart(ctx, &castorv1.CompleteMultipartMetaRequest{
+		UploadId: initAbort.GetUploadId(),
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition on aborted upload, got: %v", err)
+	}
+}

@@ -231,6 +231,99 @@ func (s *Server) ListManifests(ctx context.Context, req *castorv1.ListManifestsR
 	}, nil
 }
 
+func (s *Server) InitiateMultipart(ctx context.Context, req *castorv1.InitiateMultipartMetaRequest) (*castorv1.InitiateMultipartMetaResponse, error) {
+	if req.GetBucket() == "" {
+		return nil, status.Error(codes.InvalidArgument, "bucket name is required")
+	}
+	if req.GetKey() == "" {
+		return nil, status.Error(codes.InvalidArgument, "object key is required")
+	}
+	if req.GetUploadId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "upload_id is required")
+	}
+	cmd, err := consensus.NewInitiateMultipartCommand(req)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "encode initiate multipart command: %v", err)
+	}
+	res, err := s.apply(cmd)
+	if err != nil {
+		return nil, toGRPCError(err)
+	}
+	record, ok := res.(*castorv1.MultipartRecord)
+	if !ok || record == nil {
+		return &castorv1.InitiateMultipartMetaResponse{UploadId: req.GetUploadId()}, nil
+	}
+	return &castorv1.InitiateMultipartMetaResponse{
+		UploadId:  record.UploadId,
+		CreatedAt: record.CreatedAt,
+	}, nil
+}
+
+func (s *Server) CommitPart(ctx context.Context, req *castorv1.CommitPartMetaRequest) (*castorv1.CommitPartMetaResponse, error) {
+	if req.GetUploadId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "upload_id is required")
+	}
+	if req.GetPartNumber() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "part_number must be greater than zero")
+	}
+	if req.GetEtag() == "" {
+		return nil, status.Error(codes.InvalidArgument, "etag is required")
+	}
+	cmd, err := consensus.NewCommitPartCommand(req)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "encode commit part command: %v", err)
+	}
+	res, err := s.apply(cmd)
+	if err != nil {
+		return nil, toGRPCError(err)
+	}
+	part, ok := res.(*castorv1.PartRecord)
+	etag := req.GetEtag()
+	if ok && part != nil && part.Etag != "" {
+		etag = part.Etag
+	}
+	return &castorv1.CommitPartMetaResponse{
+		Committed: true,
+		Etag:      etag,
+	}, nil
+}
+
+func (s *Server) CompleteMultipart(ctx context.Context, req *castorv1.CompleteMultipartMetaRequest) (*castorv1.CommitManifestResponse, error) {
+	if req.GetUploadId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "upload_id is required")
+	}
+	cmd, err := consensus.NewCompleteMultipartCommand(req)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "encode complete multipart command: %v", err)
+	}
+	res, err := s.apply(cmd)
+	if err != nil {
+		return nil, toGRPCError(err)
+	}
+	record, ok := res.(*castorv1.ManifestRecord)
+	if !ok || record == nil {
+		return &castorv1.CommitManifestResponse{Committed: true}, nil
+	}
+	return &castorv1.CommitManifestResponse{
+		Committed:   true,
+		CommittedAt: record.CreatedAt,
+	}, nil
+}
+
+func (s *Server) AbortMultipart(ctx context.Context, req *castorv1.AbortMultipartMetaRequest) (*castorv1.AbortMultipartMetaResponse, error) {
+	if req.GetUploadId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "upload_id is required")
+	}
+	cmd, err := consensus.NewAbortMultipartCommand(req)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "encode abort multipart command: %v", err)
+	}
+	if _, err := s.apply(cmd); err != nil {
+		return nil, toGRPCError(err)
+	}
+	return &castorv1.AbortMultipartMetaResponse{Aborted: true}, nil
+}
+
 func (s *Server) RegisterNode(ctx context.Context, req *castorv1.RegisterNodeRequest) (*castorv1.RegisterNodeResponse, error) {
 	if req.GetNodeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "node_id is required")
@@ -277,13 +370,13 @@ func toGRPCError(err error) error {
 	switch {
 	case errors.Is(err, consensus.ErrNotLeader), errors.Is(err, consensus.ErrLeaderUnavailable), errors.Is(err, consensus.ErrRaftNotInitialized):
 		return status.Error(codes.Unavailable, err.Error())
-	case errors.Is(err, store.ErrNotFound), errors.Is(err, store.ErrBucketNotFound):
+	case errors.Is(err, store.ErrNotFound), errors.Is(err, store.ErrBucketNotFound), errors.Is(err, store.ErrMultipartNotFound):
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, store.ErrBucketExists):
 		return status.Error(codes.AlreadyExists, err.Error())
-	case errors.Is(err, store.ErrBucketNotEmpty):
+	case errors.Is(err, store.ErrBucketNotEmpty), errors.Is(err, store.ErrMultipartNotPending):
 		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, store.ErrInvalidKey):
+	case errors.Is(err, store.ErrInvalidKey), errors.Is(err, store.ErrInvalidPart):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, context.Canceled):
 		return status.Error(codes.Canceled, err.Error())
