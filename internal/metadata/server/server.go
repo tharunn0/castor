@@ -3,12 +3,19 @@ package server
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
 	"github.com/tharunn0/castor/internal/metadata/consensus"
 	"github.com/tharunn0/castor/internal/metadata/registry"
 	"github.com/tharunn0/castor/internal/metadata/store"
+	"github.com/tharunn0/castor/internal/metadata/telemetry"
+	telemetryPkg "github.com/tharunn0/castor/internal/telemetry"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -20,12 +27,19 @@ type RaftApplier interface {
 	LeaderAddr() string
 }
 
+type consensusContextApplier interface {
+	ApplyContext(ctx context.Context, cmd *consensus.Command, timeout time.Duration) (any, error)
+}
+
 type Server struct {
 	castorv1.UnimplementedMetadataServiceServer
 	store    *store.Store
 	raft     RaftApplier
 	registry *registry.Registry
 	timeout  time.Duration
+	logger   *slog.Logger
+	tracer   trace.Tracer
+	metrics  *telemetry.MetadataMetrics
 }
 
 type Option func(*Server)
@@ -42,12 +56,37 @@ func WithRegistry(reg *registry.Registry) Option {
 	}
 }
 
+func WithLogger(logger *slog.Logger) Option {
+	return func(s *Server) {
+		s.logger = logger
+	}
+}
+
+func WithTracer(tracer trace.Tracer) Option {
+	return func(s *Server) {
+		s.tracer = tracer
+	}
+}
+
+func WithMetrics(metrics *telemetry.MetadataMetrics) Option {
+	return func(s *Server) {
+		s.metrics = metrics
+	}
+}
+
 func New(s *store.Store, r RaftApplier, opts ...Option) *Server {
+	defaultMetrics := telemetry.NewMetadataMetrics("server", &telemetryPkg.Metrics{
+		Registry: prometheus.NewRegistry(),
+	})
+
 	srv := &Server{
 		store:    s,
 		raft:     r,
 		registry: registry.New(),
 		timeout:  5 * time.Second,
+		logger:   slog.Default(),
+		tracer:   otel.GetTracerProvider().Tracer("metadata-svc"),
+		metrics:  defaultMetrics,
 	}
 	for _, opt := range opts {
 		opt(srv)
@@ -55,13 +94,23 @@ func New(s *store.Store, r RaftApplier, opts ...Option) *Server {
 	return srv
 }
 
-func (s *Server) apply(cmd *consensus.Command) (any, error) {
+func (s *Server) apply(ctx context.Context, cmd *consensus.Command) (any, error) {
 	if s.raft == nil {
 		return nil, status.Error(codes.Unavailable, "raft consensus not configured")
 	}
 	timeout := s.timeout
 	if timeout <= 0 {
 		timeout = 5 * time.Second
+	}
+	if applier, ok := s.raft.(consensusContextApplier); ok {
+		res, err := applier.ApplyContext(ctx, cmd, timeout)
+		if err != nil {
+			return nil, err
+		}
+		if applyErr, ok := res.(error); ok && applyErr != nil {
+			return nil, applyErr
+		}
+		return res, nil
 	}
 	res, err := s.raft.Apply(cmd, timeout)
 	if err != nil {
@@ -74,17 +123,45 @@ func (s *Server) apply(cmd *consensus.Command) (any, error) {
 }
 
 func (s *Server) CreateBucket(ctx context.Context, req *castorv1.CreateBucketMetadataRequest) (*castorv1.CreateBucketMetadataResponse, error) {
+	ctx, span := s.tracer.Start(ctx, "Metadata/CreateBucket",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			attribute.String("s3.bucket", req.GetBucket()),
+		),
+	)
+	defer span.End()
+
 	if req.GetBucket() == "" {
-		return nil, status.Error(codes.InvalidArgument, "bucket name is required")
+		err := status.Error(codes.InvalidArgument, "bucket name is required")
+		span.RecordError(err)
+		return nil, err
 	}
 	cmd, err := consensus.NewCreateBucketCommand(req)
 	if err != nil {
+		span.RecordError(err)
 		return nil, status.Errorf(codes.Internal, "encode create bucket command: %v", err)
 	}
-	res, err := s.apply(cmd)
+
+	start := time.Now()
+	res, err := s.apply(ctx, cmd)
+	duration := time.Since(start)
+	s.metrics.CommitDuration.WithLabelValues("create_bucket").Observe(duration.Seconds())
+
 	if err != nil {
-		return nil, toGRPCError(err)
+		s.metrics.CommitsTotal.WithLabelValues("create_bucket", "error").Inc()
+		s.logger.ErrorContext(ctx, "failed to apply metadata command",
+			"operation", "create_bucket",
+			"bucket", req.GetBucket(),
+			"error", err,
+		)
+		grpcErr := toGRPCError(err)
+		span.RecordError(grpcErr)
+		return nil, grpcErr
 	}
+
+	s.metrics.CommitsTotal.WithLabelValues("create_bucket", "success").Inc()
+	s.logger.InfoContext(ctx, "bucket created successfully", "bucket", req.GetBucket())
+
 	record, ok := res.(*castorv1.BucketRecord)
 	if !ok || record == nil {
 		return &castorv1.CreateBucketMetadataResponse{Created: true}, nil
@@ -103,9 +180,10 @@ func (s *Server) DeleteBucket(ctx context.Context, req *castorv1.DeleteBucketMet
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "encode delete bucket command: %v", err)
 	}
-	if _, err := s.apply(cmd); err != nil {
+	if _, err := s.apply(ctx, cmd); err != nil {
 		return nil, toGRPCError(err)
 	}
+	s.logger.InfoContext(ctx, "bucket deleted successfully", "bucket", req.GetBucket())
 	return &castorv1.DeleteBucketMetadataResponse{Deleted: true}, nil
 }
 
@@ -129,20 +207,58 @@ func (s *Server) CheckBucketExists(ctx context.Context, req *castorv1.CheckBucke
 }
 
 func (s *Server) CommitManifest(ctx context.Context, req *castorv1.CommitManifestRequest) (*castorv1.CommitManifestResponse, error) {
+	ctx, span := s.tracer.Start(ctx, "Metadata/CommitManifest",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			attribute.String("s3.bucket", req.GetBucket()),
+			attribute.String("s3.key", req.GetKey()),
+			attribute.Int64("s3.size_bytes", req.GetSize()),
+			attribute.Int("s3.parts", len(req.GetChunkIds())),
+		),
+	)
+	defer span.End()
+
 	if req.GetBucket() == "" {
-		return nil, status.Error(codes.InvalidArgument, "bucket name is required")
+		err := status.Error(codes.InvalidArgument, "bucket name is required")
+		span.RecordError(err)
+		return nil, err
 	}
 	if req.GetKey() == "" {
-		return nil, status.Error(codes.InvalidArgument, "object key is required")
+		err := status.Error(codes.InvalidArgument, "object key is required")
+		span.RecordError(err)
+		return nil, err
 	}
 	cmd, err := consensus.NewCommitManifestCommand(req)
 	if err != nil {
+		span.RecordError(err)
 		return nil, status.Errorf(codes.Internal, "encode commit manifest command: %v", err)
 	}
-	res, err := s.apply(cmd)
+
+	start := time.Now()
+	res, err := s.apply(ctx, cmd)
+	duration := time.Since(start)
+	s.metrics.CommitDuration.WithLabelValues("commit_manifest").Observe(duration.Seconds())
+
 	if err != nil {
-		return nil, toGRPCError(err)
+		s.metrics.CommitsTotal.WithLabelValues("commit_manifest", "error").Inc()
+		s.logger.ErrorContext(ctx, "failed to apply metadata command",
+			"operation", "commit_manifest",
+			"bucket", req.GetBucket(),
+			"key", req.GetKey(),
+			"error", err,
+		)
+		grpcErr := toGRPCError(err)
+		span.RecordError(grpcErr)
+		return nil, grpcErr
 	}
+
+	s.metrics.CommitsTotal.WithLabelValues("commit_manifest", "success").Inc()
+	s.logger.DebugContext(ctx, "manifest committed successfully",
+		"bucket", req.GetBucket(),
+		"key", req.GetKey(),
+		"size_bytes", req.GetSize(),
+	)
+
 	record, ok := res.(*castorv1.ManifestRecord)
 	if !ok || record == nil {
 		return &castorv1.CommitManifestResponse{Committed: true}, nil
@@ -209,7 +325,7 @@ func (s *Server) DeleteManifest(ctx context.Context, req *castorv1.DeleteManifes
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "encode delete manifest command: %v", err)
 	}
-	if _, err := s.apply(cmd); err != nil {
+	if _, err := s.apply(ctx, cmd); err != nil {
 		return nil, toGRPCError(err)
 	}
 	return &castorv1.DeleteManifestResponse{Deleted: true}, nil
@@ -232,23 +348,64 @@ func (s *Server) ListManifests(ctx context.Context, req *castorv1.ListManifestsR
 }
 
 func (s *Server) InitiateMultipart(ctx context.Context, req *castorv1.InitiateMultipartMetaRequest) (*castorv1.InitiateMultipartMetaResponse, error) {
+	ctx, span := s.tracer.Start(ctx, "Metadata/InitiateMultipart",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			attribute.String("s3.bucket", req.GetBucket()),
+			attribute.String("s3.key", req.GetKey()),
+		),
+	)
+	defer span.End()
+
 	if req.GetBucket() == "" {
-		return nil, status.Error(codes.InvalidArgument, "bucket name is required")
+		err := status.Error(codes.InvalidArgument, "bucket name is required")
+		span.RecordError(err)
+		return nil, err
 	}
 	if req.GetKey() == "" {
-		return nil, status.Error(codes.InvalidArgument, "object key is required")
+		err := status.Error(codes.InvalidArgument, "object key is required")
+		span.RecordError(err)
+		return nil, err
 	}
 	if req.GetUploadId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "upload_id is required")
+		err := status.Error(codes.InvalidArgument, "upload_id is required")
+		span.RecordError(err)
+		return nil, err
 	}
+	span.SetAttributes(attribute.String("s3.upload_id", req.GetUploadId()))
+
 	cmd, err := consensus.NewInitiateMultipartCommand(req)
 	if err != nil {
+		span.RecordError(err)
 		return nil, status.Errorf(codes.Internal, "encode initiate multipart command: %v", err)
 	}
-	res, err := s.apply(cmd)
+
+	start := time.Now()
+	res, err := s.apply(ctx, cmd)
+	duration := time.Since(start)
+	s.metrics.CommitDuration.WithLabelValues("initiate_mp").Observe(duration.Seconds())
+
 	if err != nil {
-		return nil, toGRPCError(err)
+		s.metrics.CommitsTotal.WithLabelValues("initiate_mp", "error").Inc()
+		s.logger.ErrorContext(ctx, "failed to apply metadata command",
+			"operation", "initiate_mp",
+			"bucket", req.GetBucket(),
+			"key", req.GetKey(),
+			"upload_id", req.GetUploadId(),
+			"error", err,
+		)
+		grpcErr := toGRPCError(err)
+		span.RecordError(grpcErr)
+		return nil, grpcErr
 	}
+
+	s.metrics.CommitsTotal.WithLabelValues("initiate_mp", "success").Inc()
+	s.logger.DebugContext(ctx, "multipart upload initiated",
+		"bucket", req.GetBucket(),
+		"key", req.GetKey(),
+		"upload_id", req.GetUploadId(),
+	)
+
 	record, ok := res.(*castorv1.MultipartRecord)
 	if !ok || record == nil {
 		return &castorv1.InitiateMultipartMetaResponse{UploadId: req.GetUploadId()}, nil
@@ -260,23 +417,62 @@ func (s *Server) InitiateMultipart(ctx context.Context, req *castorv1.InitiateMu
 }
 
 func (s *Server) CommitPart(ctx context.Context, req *castorv1.CommitPartMetaRequest) (*castorv1.CommitPartMetaResponse, error) {
+	ctx, span := s.tracer.Start(ctx, "Metadata/CommitPart",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			attribute.String("s3.upload_id", req.GetUploadId()),
+			attribute.Int64("s3.part_number", int64(req.GetPartNumber())),
+		),
+	)
+	defer span.End()
+
 	if req.GetUploadId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "upload_id is required")
+		err := status.Error(codes.InvalidArgument, "upload_id is required")
+		span.RecordError(err)
+		return nil, err
 	}
 	if req.GetPartNumber() <= 0 {
-		return nil, status.Error(codes.InvalidArgument, "part_number must be greater than zero")
+		err := status.Error(codes.InvalidArgument, "part_number must be greater than zero")
+		span.RecordError(err)
+		return nil, err
 	}
 	if req.GetEtag() == "" {
-		return nil, status.Error(codes.InvalidArgument, "etag is required")
+		err := status.Error(codes.InvalidArgument, "etag is required")
+		span.RecordError(err)
+		return nil, err
 	}
+
 	cmd, err := consensus.NewCommitPartCommand(req)
 	if err != nil {
+		span.RecordError(err)
 		return nil, status.Errorf(codes.Internal, "encode commit part command: %v", err)
 	}
-	res, err := s.apply(cmd)
+
+	start := time.Now()
+	res, err := s.apply(ctx, cmd)
+	duration := time.Since(start)
+	s.metrics.CommitDuration.WithLabelValues("commit_part").Observe(duration.Seconds())
+
 	if err != nil {
-		return nil, toGRPCError(err)
+		s.metrics.CommitsTotal.WithLabelValues("commit_part", "error").Inc()
+		s.logger.ErrorContext(ctx, "failed to apply metadata command",
+			"operation", "commit_part",
+			"upload_id", req.GetUploadId(),
+			"part_number", req.GetPartNumber(),
+			"error", err,
+		)
+		grpcErr := toGRPCError(err)
+		span.RecordError(grpcErr)
+		return nil, grpcErr
 	}
+
+	s.metrics.CommitsTotal.WithLabelValues("commit_part", "success").Inc()
+	s.logger.DebugContext(ctx, "part committed successfully",
+		"upload_id", req.GetUploadId(),
+		"part_number", req.GetPartNumber(),
+		"etag", req.GetEtag(),
+	)
+
 	part, ok := res.(*castorv1.PartRecord)
 	etag := req.GetEtag()
 	if ok && part != nil && part.Etag != "" {
@@ -289,21 +485,61 @@ func (s *Server) CommitPart(ctx context.Context, req *castorv1.CommitPartMetaReq
 }
 
 func (s *Server) CompleteMultipart(ctx context.Context, req *castorv1.CompleteMultipartMetaRequest) (*castorv1.CommitManifestResponse, error) {
+	ctx, span := s.tracer.Start(ctx, "Metadata/CompleteMultipart",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			attribute.String("s3.upload_id", req.GetUploadId()),
+			attribute.Int("s3.total_parts", len(req.GetParts())),
+		),
+	)
+	defer span.End()
+
 	if req.GetUploadId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "upload_id is required")
+		err := status.Error(codes.InvalidArgument, "upload_id is required")
+		span.RecordError(err)
+		return nil, err
 	}
+
 	cmd, err := consensus.NewCompleteMultipartCommand(req)
 	if err != nil {
+		span.RecordError(err)
 		return nil, status.Errorf(codes.Internal, "encode complete multipart command: %v", err)
 	}
-	res, err := s.apply(cmd)
+
+	start := time.Now()
+	res, err := s.apply(ctx, cmd)
+	duration := time.Since(start)
+	s.metrics.CommitDuration.WithLabelValues("complete_mp").Observe(duration.Seconds())
+
 	if err != nil {
-		return nil, toGRPCError(err)
+		s.metrics.CommitsTotal.WithLabelValues("complete_mp", "error").Inc()
+		s.logger.ErrorContext(ctx, "failed to apply metadata command",
+			"operation", "complete_mp",
+			"upload_id", req.GetUploadId(),
+			"error", err,
+		)
+		grpcErr := toGRPCError(err)
+		span.RecordError(grpcErr)
+		return nil, grpcErr
 	}
+
+	s.metrics.CommitsTotal.WithLabelValues("complete_mp", "success").Inc()
+
 	record, ok := res.(*castorv1.ManifestRecord)
 	if !ok || record == nil {
 		return &castorv1.CommitManifestResponse{Committed: true}, nil
 	}
+
+	span.SetAttributes(
+		attribute.String("s3.bucket", record.Bucket),
+		attribute.String("s3.key", record.Key),
+	)
+	s.logger.DebugContext(ctx, "multipart upload completed",
+		"upload_id", req.GetUploadId(),
+		"bucket", record.Bucket,
+		"key", record.Key,
+	)
+
 	return &castorv1.CommitManifestResponse{
 		Committed:   true,
 		CommittedAt: record.CreatedAt,
@@ -318,7 +554,7 @@ func (s *Server) AbortMultipart(ctx context.Context, req *castorv1.AbortMultipar
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "encode abort multipart command: %v", err)
 	}
-	if _, err := s.apply(cmd); err != nil {
+	if _, err := s.apply(ctx, cmd); err != nil {
 		return nil, toGRPCError(err)
 	}
 	return &castorv1.AbortMultipartMetaResponse{Aborted: true}, nil

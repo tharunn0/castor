@@ -66,7 +66,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	metaServer := server.New(dbStore, raftNode)
+	metaServer := server.New(dbStore, raftNode,
+		server.WithLogger(logger),
+		server.WithMetrics(metaMetrics),
+		server.WithTracer(tel.Tracer),
+	)
 	grpcServer := grpc.NewServer(telemetry.ServerOption())
 	castorv1.RegisterMetadataServiceServer(grpcServer, metaServer)
 

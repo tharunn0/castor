@@ -9,9 +9,16 @@ import (
 	"time"
 
 	"github.com/hashicorp/raft"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
 	"github.com/tharunn0/castor/internal/metadata/consensus"
 	"github.com/tharunn0/castor/internal/metadata/store"
+	"github.com/tharunn0/castor/internal/metadata/telemetry"
+	telemetryPkg "github.com/tharunn0/castor/internal/telemetry"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -590,5 +597,182 @@ func TestServer_MultipartOperations(t *testing.T) {
 	})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("expected FailedPrecondition on aborted upload, got: %v", err)
+	}
+}
+
+func TestServer_Telemetry(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	reg := prometheus.NewRegistry()
+	metrics := telemetry.NewMetadataMetrics("server-test", &telemetryPkg.Metrics{Registry: reg})
+
+	tmpDir := t.TempDir()
+	s, err := store.Open(filepath.Join(tmpDir, "badger"), true)
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer s.Close()
+
+	fsm := consensus.NewFSM(s, newTestLogger())
+	applier := &directApplier{fsm: fsm}
+
+	srv := New(s, applier,
+		WithTracer(tp.Tracer("server-telemetry-test")),
+		WithMetrics(metrics),
+		WithLogger(newTestLogger()),
+	)
+
+	ctx := context.Background()
+
+	// 1. CreateBucket
+	_, err = srv.CreateBucket(ctx, &castorv1.CreateBucketMetadataRequest{
+		Bucket: "telemetry-bucket",
+	})
+	if err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	// 2. CommitManifest
+	_, err = srv.CommitManifest(ctx, &castorv1.CommitManifestRequest{
+		Bucket:   "telemetry-bucket",
+		Key:      "test.txt",
+		Size:     1024,
+		ChunkIds: []string{"chunk1", "chunk2"},
+	})
+	if err != nil {
+		t.Fatalf("CommitManifest failed: %v", err)
+	}
+
+	// 3. InitiateMultipart
+	_, err = srv.InitiateMultipart(ctx, &castorv1.InitiateMultipartMetaRequest{
+		Bucket:   "telemetry-bucket",
+		Key:      "large.bin",
+		UploadId: "upload-tel-1",
+	})
+	if err != nil {
+		t.Fatalf("InitiateMultipart failed: %v", err)
+	}
+
+	// 4. CommitPart
+	_, err = srv.CommitPart(ctx, &castorv1.CommitPartMetaRequest{
+		UploadId:   "upload-tel-1",
+		PartNumber: 1,
+		Size:       512,
+		Etag:       "etag1",
+		ChunkIds:   []string{"c1"},
+	})
+	if err != nil {
+		t.Fatalf("CommitPart failed: %v", err)
+	}
+
+	// 5. CompleteMultipart
+	_, err = srv.CompleteMultipart(ctx, &castorv1.CompleteMultipartMetaRequest{
+		UploadId: "upload-tel-1",
+		Parts: []*castorv1.PartSummary{
+			{PartNumber: 1, Etag: "etag1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CompleteMultipart failed: %v", err)
+	}
+
+	// 6. Error mutation (duplicate bucket)
+	_, err = srv.CreateBucket(ctx, &castorv1.CreateBucketMetadataRequest{
+		Bucket: "telemetry-bucket",
+	})
+	if err == nil {
+		t.Fatal("expected error on duplicate bucket creation")
+	}
+
+	// 7. Read operations (must NOT emit create spans)
+	beforeReadSpanCount := len(exporter.GetSpans())
+	_, _ = srv.GetManifest(ctx, &castorv1.GetManifestRequest{Bucket: "telemetry-bucket", Key: "test.txt"})
+	_, _ = srv.ListManifests(ctx, &castorv1.ListManifestsRequest{Bucket: "telemetry-bucket"})
+	_, _ = srv.ListBuckets(ctx, &castorv1.ListBucketsMetadataRequest{})
+	_, _ = srv.CheckBucketExists(ctx, &castorv1.CheckBucketExistsRequest{Bucket: "telemetry-bucket"})
+	if len(exporter.GetSpans()) != beforeReadSpanCount {
+		t.Errorf("expected read operations to not create spans, got new spans: %d vs %d", len(exporter.GetSpans()), beforeReadSpanCount)
+	}
+
+	// Verify Spans
+	spans := exporter.GetSpans()
+	spanMap := make(map[string]tracetest.SpanStub)
+	for _, span := range spans {
+		spanMap[span.Name] = span
+	}
+
+	expectedSpans := []string{
+		"Metadata/CreateBucket",
+		"Metadata/CommitManifest",
+		"Metadata/InitiateMultipart",
+		"Metadata/CommitPart",
+		"Metadata/CompleteMultipart",
+	}
+
+	for _, name := range expectedSpans {
+		span, ok := spanMap[name]
+		if !ok {
+			t.Errorf("expected span %s to be recorded", name)
+			continue
+		}
+		if span.SpanKind != trace.SpanKindServer {
+			t.Errorf("expected span %s to have SpanKindServer, got %v", name, span.SpanKind)
+		}
+	}
+
+	// Check specific span attributes
+	if s, ok := spanMap["Metadata/CreateBucket"]; ok {
+		hasBucket := false
+		for _, attr := range s.Attributes {
+			if attr.Key == "s3.bucket" && attr.Value.AsString() == "telemetry-bucket" {
+				hasBucket = true
+			}
+		}
+		if !hasBucket {
+			t.Error("expected Metadata/CreateBucket to have s3.bucket attribute")
+		}
+	}
+
+	if s, ok := spanMap["Metadata/CommitManifest"]; ok {
+		var hasBucket, hasKey, hasSize, hasParts bool
+		for _, attr := range s.Attributes {
+			if attr.Key == "s3.bucket" && attr.Value.AsString() == "telemetry-bucket" {
+				hasBucket = true
+			}
+			if attr.Key == "s3.key" && attr.Value.AsString() == "test.txt" {
+				hasKey = true
+			}
+			if attr.Key == "s3.size_bytes" && attr.Value.AsInt64() == 1024 {
+				hasSize = true
+			}
+			if attr.Key == "s3.parts" && attr.Value.AsInt64() == 2 {
+				hasParts = true
+			}
+		}
+		if !hasBucket || !hasKey || !hasSize || !hasParts {
+			t.Errorf("expected CommitManifest attributes, got bucket=%v key=%v size=%v parts=%v", hasBucket, hasKey, hasSize, hasParts)
+		}
+	}
+
+	// Verify Metrics
+	if val := testutil.ToFloat64(metrics.CommitsTotal.WithLabelValues("create_bucket", "success")); val != 1 {
+		t.Errorf("expected create_bucket success to be 1, got %v", val)
+	}
+	if val := testutil.ToFloat64(metrics.CommitsTotal.WithLabelValues("create_bucket", "error")); val != 1 {
+		t.Errorf("expected create_bucket error to be 1, got %v", val)
+	}
+	if val := testutil.ToFloat64(metrics.CommitsTotal.WithLabelValues("commit_manifest", "success")); val != 1 {
+		t.Errorf("expected commit_manifest success to be 1, got %v", val)
+	}
+	if val := testutil.ToFloat64(metrics.CommitsTotal.WithLabelValues("initiate_mp", "success")); val != 1 {
+		t.Errorf("expected initiate_mp success to be 1, got %v", val)
+	}
+	if val := testutil.ToFloat64(metrics.CommitsTotal.WithLabelValues("commit_part", "success")); val != 1 {
+		t.Errorf("expected commit_part success to be 1, got %v", val)
+	}
+	if val := testutil.ToFloat64(metrics.CommitsTotal.WithLabelValues("complete_mp", "success")); val != 1 {
+		t.Errorf("expected complete_mp success to be 1, got %v", val)
 	}
 }
