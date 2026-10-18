@@ -25,10 +25,12 @@ import (
 	datastorage "github.com/tharunn0/castor/internal/data/storage"
 	"github.com/tharunn0/castor/internal/gateway/config"
 	"github.com/tharunn0/castor/internal/gateway/storage"
+	gwtelemetry "github.com/tharunn0/castor/internal/gateway/telemetry"
 	metaconfig "github.com/tharunn0/castor/internal/metadata/config"
 	"github.com/tharunn0/castor/internal/metadata/consensus"
 	metaserver "github.com/tharunn0/castor/internal/metadata/server"
 	"github.com/tharunn0/castor/internal/metadata/store"
+	"github.com/tharunn0/castor/internal/telemetry"
 	gwauth "github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/s3err"
 	"github.com/versity/versitygw/s3response"
@@ -1328,5 +1330,50 @@ func TestCastorBackend_MultipartUpload(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error on UploadPart to aborted upload")
+	}
+}
+
+func TestCastorBackend_Telemetry(t *testing.T) {
+	ctx := context.Background()
+
+	tel, err := telemetry.Init(ctx, "test-gateway-svc", "test")
+	if err != nil {
+		t.Fatalf("failed to init telemetry: %v", err)
+	}
+	defer func() {
+		_ = tel.Shutdown(ctx)
+	}()
+
+	gwMetrics := gwtelemetry.NewGatewayMetrics(tel.Metrics)
+
+	be := &CastorBackend{
+		logger: tel.Logger,
+	}
+	be = be.WithTracer(tel.Tracer).WithMetrics(gwMetrics)
+
+	// Validate error metrics on invalid input
+	_, err = be.PutObject(ctx, s3response.PutObjectInput{})
+	if err == nil {
+		t.Fatal("expected error for empty bucket")
+	}
+
+	err = be.CreateBucket(ctx, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for empty bucket creation")
+	}
+
+	_, err = be.CreateMultipartUpload(ctx, s3response.CreateMultipartUploadInput{})
+	if err == nil {
+		t.Fatal("expected error for empty multipart input")
+	}
+
+	_, err = be.UploadPart(ctx, nil)
+	if err == nil {
+		t.Fatal("expected error for nil upload part input")
+	}
+
+	_, _, err = be.CompleteMultipartUpload(ctx, nil)
+	if err == nil {
+		t.Fatal("expected error for nil complete multipart input")
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
 	"github.com/tharunn0/castor/internal/gateway/config"
+	"github.com/tharunn0/castor/internal/telemetry"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -98,10 +100,8 @@ func New(cfg config.Config, metaClient castorv1.MetadataServiceClient) *StorageE
 func (e *StorageEngine) AddMetadataNode(addr string) {
 	e.metaMu.Lock()
 	defer e.metaMu.Unlock()
-	for _, node := range e.metaNodes {
-		if node == addr {
-			return
-		}
+	if slices.Contains(e.metaNodes, addr) {
+		return
 	}
 	e.metaNodes = append(e.metaNodes, addr)
 }
@@ -122,7 +122,11 @@ func (e *StorageEngine) getOrCreateClient(addr string) (castorv1.MetadataService
 		return client, nil
 	}
 
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(
+		addr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		telemetry.ClientDialOption(),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("dial metadata node %s: %w", addr, err)
 	}

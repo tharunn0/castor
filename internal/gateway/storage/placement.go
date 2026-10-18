@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
+	"github.com/tharunn0/castor/internal/telemetry"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -226,7 +227,11 @@ func (m *PlacementManager) getClient(nodeAddr string) (castorv1.DataServiceClien
 		return client, nil
 	}
 
-	conn, err := grpc.NewClient(nodeAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(
+		nodeAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		telemetry.ClientDialOption(),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("connect to node %s: %w", nodeAddr, err)
 	}

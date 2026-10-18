@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -15,6 +16,7 @@ import (
 	"github.com/tharunn0/castor/internal/gateway/config"
 	"github.com/tharunn0/castor/internal/gateway/health"
 	"github.com/tharunn0/castor/internal/gateway/storage"
+	gwtelemetry "github.com/tharunn0/castor/internal/gateway/telemetry"
 	"github.com/tharunn0/castor/internal/telemetry"
 	"github.com/versity/versitygw/embedgw"
 	"github.com/versity/versitygw/s3api"
@@ -23,7 +25,17 @@ import (
 )
 
 func main() {
-	logger := telemetry.NewLogger()
+	ctx := context.Background()
+	tel, err := telemetry.Init(ctx, "gateway-svc")
+	if err != nil {
+		slog.Error("failed to initialize telemetry", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		_ = tel.Shutdown(context.Background())
+	}()
+
+	logger := tel.Logger
 	cfg := config.Load()
 
 	logger.Info("starting gateway service",
@@ -35,7 +47,11 @@ func main() {
 		"auth_addr", cfg.AuthAddr,
 	)
 
-	metaConn, err := grpc.NewClient(cfg.MetadataAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	metaConn, err := grpc.NewClient(
+		cfg.MetadataAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		telemetry.ClientDialOption(),
+	)
 	if err != nil {
 		logger.Error("failed to connect to metadata service", "error", err, "addr", cfg.MetadataAddr)
 		os.Exit(1)
@@ -54,7 +70,10 @@ func main() {
 		}
 	}()
 
-	be := backend.New(engine, metaClient, logger)
+	gwMetrics := gwtelemetry.NewGatewayMetrics(tel.Metrics)
+	be := backend.New(engine, metaClient, logger).
+		WithTracer(tel.Tracer).
+		WithMetrics(gwMetrics)
 
 	authClient := gwauth.NewHTTPClient(cfg.AuthAddr)
 	iamBridge := gwauth.NewBridge(authClient, cfg.RootAccessKey, cfg.RootSecretKey, logger)
@@ -66,6 +85,7 @@ func main() {
 	}()
 
 	healthApp := health.NewApp(cfg)
+	healthApp.Get("/metrics", telemetry.FiberPrometheusHandler(tel.Metrics))
 	healthHandler := health.NewHandler(cfg)
 
 	go func() {

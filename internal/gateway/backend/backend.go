@@ -15,10 +15,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
 	"github.com/tharunn0/castor/internal/gateway/storage"
+	gwtelemetry "github.com/tharunn0/castor/internal/gateway/telemetry"
+	"github.com/tharunn0/castor/internal/telemetry"
 	gwauth "github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/backend"
 	"github.com/versity/versitygw/s3err"
 	"github.com/versity/versitygw/s3response"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -28,15 +32,66 @@ type CastorBackend struct {
 	engine     *storage.StorageEngine
 	metaClient castorv1.MetadataServiceClient
 	logger     *slog.Logger
+	tracer     trace.Tracer
+	metrics    *gwtelemetry.GatewayMetrics
 }
 
 var _ backend.Backend = (*CastorBackend)(nil)
 
 func New(engine *storage.StorageEngine, metaClient castorv1.MetadataServiceClient, l *slog.Logger) *CastorBackend {
+	if l == nil {
+		l = slog.Default()
+	}
 	return &CastorBackend{
 		engine:     engine,
 		metaClient: metaClient,
 		logger:     l,
+		tracer:     telemetry.GetTracer("gateway-svc"),
+	}
+}
+
+func (b *CastorBackend) WithTracer(tr trace.Tracer) *CastorBackend {
+	if tr != nil {
+		b.tracer = tr
+	}
+	return b
+}
+
+func (b *CastorBackend) WithMetrics(m *gwtelemetry.GatewayMetrics) *CastorBackend {
+	b.metrics = m
+	return b
+}
+
+func statusCodeClass(err error) string {
+	if err == nil {
+		return "2xx"
+	}
+	var apiErr s3err.APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.HTTPStatusCode >= 400 && apiErr.HTTPStatusCode < 500 {
+			return "4xx"
+		}
+		return "5xx"
+	}
+	if s, ok := status.FromError(err); ok {
+		switch s.Code() {
+		case codes.InvalidArgument, codes.NotFound, codes.AlreadyExists:
+			return "4xx"
+		default:
+			return "5xx"
+		}
+	}
+	return "5xx"
+}
+
+func (b *CastorBackend) recordMetric(method string, err error, start time.Time) {
+	if b.metrics == nil {
+		return
+	}
+	statusClass := statusCodeClass(err)
+	b.metrics.RequestsTotal.WithLabelValues(method, statusClass).Inc()
+	if err == nil {
+		b.metrics.RequestDuration.WithLabelValues(method).Observe(time.Since(start).Seconds())
 	}
 }
 
@@ -103,11 +158,13 @@ func (b *CastorBackend) HeadBucket(ctx context.Context, input *s3.HeadBucketInpu
 }
 
 func (b *CastorBackend) PutObject(ctx context.Context, input s3response.PutObjectInput) (s3response.PutObjectOutput, error) {
-	if input.Bucket == nil || *input.Bucket == "" {
-		return s3response.PutObjectOutput{}, s3err.GetAPIError(s3err.ErrInvalidBucketName)
+	bucket := ""
+	if input.Bucket != nil {
+		bucket = *input.Bucket
 	}
-	if input.Key == nil || *input.Key == "" {
-		return s3response.PutObjectOutput{}, s3err.GetAPIError(s3err.ErrNoSuchKey)
+	key := ""
+	if input.Key != nil {
+		key = *input.Key
 	}
 
 	var size int64
@@ -115,16 +172,49 @@ func (b *CastorBackend) PutObject(ctx context.Context, input s3response.PutObjec
 		size = *input.ContentLength
 	}
 
-	etag, err := b.engine.PutObject(ctx, *input.Bucket, *input.Key, "admin", input.Body, size)
-	if err != nil {
-		if errors.Is(err, storage.ErrBucketNotFound) {
-			return s3response.PutObjectOutput{}, s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
-		}
-		if s, ok := status.FromError(err); ok && s.Code() == codes.NotFound {
-			return s3response.PutObjectOutput{}, s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
-		}
+	start := time.Now()
+	ctx, span := b.tracer.Start(ctx, "S3 PutObject",
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(
+			attribute.String("s3.bucket", bucket),
+			attribute.String("s3.key", key),
+			attribute.Int64("s3.size_bytes", size),
+			attribute.Int("s3.parts", 1),
+		),
+	)
+	defer span.End()
+
+	if bucket == "" {
+		err := s3err.GetAPIError(s3err.ErrInvalidBucketName)
+		b.recordMetric("PUT", err, start)
 		return s3response.PutObjectOutput{}, err
 	}
+	if key == "" {
+		err := s3err.GetAPIError(s3err.ErrNoSuchKey)
+		b.recordMetric("PUT", err, start)
+		return s3response.PutObjectOutput{}, err
+	}
+
+	etag, err := b.engine.PutObject(ctx, bucket, key, "admin", input.Body, size)
+	if err != nil {
+		if errors.Is(err, storage.ErrBucketNotFound) {
+			err = s3err.GetBucketErr(s3err.ErrNoSuchBucket, bucket)
+		} else if s, ok := status.FromError(err); ok && s.Code() == codes.NotFound {
+			err = s3err.GetBucketErr(s3err.ErrNoSuchBucket, bucket)
+		}
+		b.recordMetric("PUT", err, start)
+		b.logger.ErrorContext(ctx, "failed to put object", "bucket", bucket, "key", key, "error", err)
+		return s3response.PutObjectOutput{}, err
+	}
+
+	b.recordMetric("PUT", nil, start)
+	b.logger.InfoContext(ctx, "object created",
+		"bucket", bucket,
+		"key", key,
+		"size_bytes", size,
+		"duration_ms", time.Since(start).Milliseconds(),
+		"status", "OK",
+	)
 
 	quotedETag := fmt.Sprintf("%q", etag)
 	out := s3response.PutObjectOutput{
@@ -313,8 +403,24 @@ func (b *CastorBackend) HeadObject(ctx context.Context, input *s3.HeadObjectInpu
 }
 
 func (b *CastorBackend) CreateBucket(ctx context.Context, req *s3.CreateBucketInput, defaultACL []byte) error {
-	if req == nil || req.Bucket == nil || *req.Bucket == "" {
-		return s3err.GetAPIError(s3err.ErrInvalidBucketName)
+	bucket := ""
+	if req != nil && req.Bucket != nil {
+		bucket = *req.Bucket
+	}
+
+	start := time.Now()
+	ctx, span := b.tracer.Start(ctx, "S3 CreateBucket",
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(
+			attribute.String("s3.bucket", bucket),
+		),
+	)
+	defer span.End()
+
+	if bucket == "" {
+		err := s3err.GetAPIError(s3err.ErrInvalidBucketName)
+		b.recordMetric("PUT", err, start)
+		return err
 	}
 
 	ownerID := "admin"
@@ -337,17 +443,26 @@ func (b *CastorBackend) CreateBucket(ctx context.Context, req *s3.CreateBucketIn
 		}
 	}
 
-	b.logger.Debug("[ Gateway-Backend : CreateBucket Request ]", "bucket :", *req.Bucket, "owner :", ownerID, "tage :", tags)
-	err := b.engine.CreateBucket(ctx, *req.Bucket, ownerID, tags)
+	b.logger.DebugContext(ctx, "[ Gateway-Backend : CreateBucket Request ]", "bucket", bucket, "owner", ownerID, "tags", tags)
+	err := b.engine.CreateBucket(ctx, bucket, ownerID, tags)
 	if err != nil {
 		if errors.Is(err, storage.ErrBucketAlreadyExists) {
-			return s3err.GetBucketErr(s3err.ErrBucketAlreadyOwnedByYou, *req.Bucket)
+			err = s3err.GetBucketErr(s3err.ErrBucketAlreadyOwnedByYou, bucket)
+		} else if s, ok := status.FromError(err); ok && s.Code() == codes.AlreadyExists {
+			err = s3err.GetBucketErr(s3err.ErrBucketAlreadyOwnedByYou, bucket)
 		}
-		if s, ok := status.FromError(err); ok && s.Code() == codes.AlreadyExists {
-			return s3err.GetBucketErr(s3err.ErrBucketAlreadyOwnedByYou, *req.Bucket)
-		}
+		b.recordMetric("PUT", err, start)
+		b.logger.ErrorContext(ctx, "failed to create bucket", "bucket", bucket, "error", err)
 		return err
 	}
+
+	b.recordMetric("PUT", nil, start)
+	b.logger.InfoContext(ctx, "bucket created",
+		"bucket", bucket,
+		"owner", ownerID,
+		"duration_ms", time.Since(start).Milliseconds(),
+		"status", "OK",
+	)
 
 	return nil
 }
@@ -619,11 +734,34 @@ func (b *CastorBackend) ListObjects(ctx context.Context, input *s3.ListObjectsIn
 }
 
 func (b *CastorBackend) CreateMultipartUpload(ctx context.Context, input s3response.CreateMultipartUploadInput) (s3response.InitiateMultipartUploadResult, error) {
-	if input.Bucket == nil || *input.Bucket == "" {
-		return s3response.InitiateMultipartUploadResult{}, s3err.GetAPIError(s3err.ErrInvalidBucketName)
+	bucket := ""
+	if input.Bucket != nil {
+		bucket = *input.Bucket
 	}
-	if input.Key == nil || *input.Key == "" {
-		return s3response.InitiateMultipartUploadResult{}, s3err.GetAPIError(s3err.ErrNoSuchKey)
+	key := ""
+	if input.Key != nil {
+		key = *input.Key
+	}
+
+	start := time.Now()
+	ctx, span := b.tracer.Start(ctx, "S3 CreateMultipartUpload",
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(
+			attribute.String("s3.bucket", bucket),
+			attribute.String("s3.key", key),
+		),
+	)
+	defer span.End()
+
+	if bucket == "" {
+		err := s3err.GetAPIError(s3err.ErrInvalidBucketName)
+		b.recordMetric("POST", err, start)
+		return s3response.InitiateMultipartUploadResult{}, err
+	}
+	if key == "" {
+		err := s3err.GetAPIError(s3err.ErrNoSuchKey)
+		b.recordMetric("POST", err, start)
+		return s3response.InitiateMultipartUploadResult{}, err
 	}
 
 	contentType := "application/octet-stream"
@@ -631,53 +769,108 @@ func (b *CastorBackend) CreateMultipartUpload(ctx context.Context, input s3respo
 		contentType = *input.ContentType
 	}
 
-	uploadID, err := b.engine.InitiateMultipartUpload(ctx, *input.Bucket, *input.Key, contentType)
+	uploadID, err := b.engine.InitiateMultipartUpload(ctx, bucket, key, contentType)
 	if err != nil {
 		if errors.Is(err, storage.ErrBucketNotFound) {
-			return s3response.InitiateMultipartUploadResult{}, s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
+			err = s3err.GetBucketErr(s3err.ErrNoSuchBucket, bucket)
 		}
+		b.recordMetric("POST", err, start)
+		b.logger.ErrorContext(ctx, "failed to create multipart upload", "bucket", bucket, "key", key, "error", err)
 		return s3response.InitiateMultipartUploadResult{}, err
 	}
 
+	span.SetAttributes(attribute.String("s3.upload_id", uploadID))
+	b.recordMetric("POST", nil, start)
+	b.logger.InfoContext(ctx, "multipart upload created",
+		"bucket", bucket,
+		"key", key,
+		"upload_id", uploadID,
+		"duration_ms", time.Since(start).Milliseconds(),
+		"status", "OK",
+	)
+
 	return s3response.InitiateMultipartUploadResult{
-		Bucket:   *input.Bucket,
-		Key:      *input.Key,
+		Bucket:   bucket,
+		Key:      key,
 		UploadId: uploadID,
 	}, nil
 }
 
 func (b *CastorBackend) UploadPart(ctx context.Context, input *s3.UploadPartInput) (*s3.UploadPartOutput, error) {
-	if input == nil || input.Bucket == nil || *input.Bucket == "" {
-		return nil, s3err.GetAPIError(s3err.ErrInvalidBucketName)
-	}
-	if input.Key == nil || *input.Key == "" {
-		return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
-	}
-	if input.UploadId == nil || *input.UploadId == "" {
-		return nil, s3err.GetAPIError(s3err.ErrNoSuchUpload)
-	}
-	if input.PartNumber == nil || *input.PartNumber <= 0 {
-		return nil, s3err.GetAPIError(s3err.ErrInvalidPart)
-	}
-
+	bucket := ""
+	key := ""
+	uploadID := ""
+	var partNum int32
 	var size int64 = -1
-	if input.ContentLength != nil {
-		size = *input.ContentLength
+
+	if input != nil {
+		if input.Bucket != nil {
+			bucket = *input.Bucket
+		}
+		if input.Key != nil {
+			key = *input.Key
+		}
+		if input.UploadId != nil {
+			uploadID = *input.UploadId
+		}
+		if input.PartNumber != nil {
+			partNum = *input.PartNumber
+		}
+		if input.ContentLength != nil {
+			size = *input.ContentLength
+		}
 	}
 
-	etag, err := b.engine.UploadPart(ctx, *input.Bucket, *input.Key, *input.UploadId, *input.PartNumber, input.Body, size)
-	if err != nil {
-		if errors.Is(err, storage.ErrNoSuchUpload) {
-			return nil, s3err.GetAPIError(s3err.ErrNoSuchUpload)
-		}
-		if errors.Is(err, storage.ErrBucketNotFound) {
-			return nil, s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
-		}
-		if errors.Is(err, storage.ErrInvalidPart) {
-			return nil, s3err.GetAPIError(s3err.ErrInvalidPart)
-		}
+	start := time.Now()
+
+	ctx, span := b.tracer.Start(ctx, "S3 UploadPart",
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(
+			attribute.String("s3.bucket", bucket),
+			attribute.String("s3.key", key),
+			attribute.String("s3.upload_id", uploadID),
+			attribute.Int("s3.part_number", int(partNum)),
+			attribute.Int64("s3.size_bytes", size),
+		),
+	)
+	defer span.End()
+
+	if bucket == "" {
+		err := s3err.GetAPIError(s3err.ErrInvalidBucketName)
+		b.recordMetric("PUT", err, start)
 		return nil, err
 	}
+	if key == "" {
+		err := s3err.GetAPIError(s3err.ErrNoSuchKey)
+		b.recordMetric("PUT", err, start)
+		return nil, err
+	}
+	if uploadID == "" {
+		err := s3err.GetAPIError(s3err.ErrNoSuchUpload)
+		b.recordMetric("PUT", err, start)
+		return nil, err
+	}
+	if partNum <= 0 {
+		err := s3err.GetAPIError(s3err.ErrInvalidPart)
+		b.recordMetric("PUT", err, start)
+		return nil, err
+	}
+
+	etag, err := b.engine.UploadPart(ctx, bucket, key, uploadID, partNum, input.Body, size)
+	if err != nil {
+		if errors.Is(err, storage.ErrNoSuchUpload) {
+			err = s3err.GetAPIError(s3err.ErrNoSuchUpload)
+		} else if errors.Is(err, storage.ErrBucketNotFound) {
+			err = s3err.GetBucketErr(s3err.ErrNoSuchBucket, bucket)
+		} else if errors.Is(err, storage.ErrInvalidPart) {
+			err = s3err.GetAPIError(s3err.ErrInvalidPart)
+		}
+		b.recordMetric("PUT", err, start)
+		b.logger.ErrorContext(ctx, "failed to upload part", "bucket", bucket, "key", key, "upload_id", uploadID, "part_number", partNum, "error", err)
+		return nil, err
+	}
+
+	b.recordMetric("PUT", nil, start)
 
 	quotedETag := fmt.Sprintf("%q", etag)
 	return &s3.UploadPartOutput{
@@ -686,17 +879,58 @@ func (b *CastorBackend) UploadPart(ctx context.Context, input *s3.UploadPartInpu
 }
 
 func (b *CastorBackend) CompleteMultipartUpload(ctx context.Context, input *s3.CompleteMultipartUploadInput) (s3response.CompleteMultipartUploadResult, string, error) {
-	if input == nil || input.Bucket == nil || *input.Bucket == "" {
-		return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrInvalidBucketName)
+	bucket := ""
+	key := ""
+	uploadID := ""
+
+	if input != nil {
+		if input.Bucket != nil {
+			bucket = *input.Bucket
+		}
+		if input.Key != nil {
+			key = *input.Key
+		}
+		if input.UploadId != nil {
+			uploadID = *input.UploadId
+		}
 	}
-	if input.Key == nil || *input.Key == "" {
-		return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrNoSuchKey)
+
+	start := time.Now()
+	var totalParts int
+	if input != nil && input.MultipartUpload != nil {
+		totalParts = len(input.MultipartUpload.Parts)
 	}
-	if input.UploadId == nil || *input.UploadId == "" {
-		return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrNoSuchUpload)
+
+	ctx, span := b.tracer.Start(ctx, "S3 CompleteMultipartUpload",
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(
+			attribute.String("s3.bucket", bucket),
+			attribute.String("s3.key", key),
+			attribute.String("s3.upload_id", uploadID),
+			attribute.Int("s3.total_parts", totalParts),
+		),
+	)
+	defer span.End()
+
+	if bucket == "" {
+		err := s3err.GetAPIError(s3err.ErrInvalidBucketName)
+		b.recordMetric("POST", err, start)
+		return s3response.CompleteMultipartUploadResult{}, "", err
+	}
+	if key == "" {
+		err := s3err.GetAPIError(s3err.ErrNoSuchKey)
+		b.recordMetric("POST", err, start)
+		return s3response.CompleteMultipartUploadResult{}, "", err
+	}
+	if uploadID == "" {
+		err := s3err.GetAPIError(s3err.ErrNoSuchUpload)
+		b.recordMetric("POST", err, start)
+		return s3response.CompleteMultipartUploadResult{}, "", err
 	}
 	if input.MultipartUpload == nil {
-		return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrInvalidPart)
+		err := s3err.GetAPIError(s3err.ErrInvalidPart)
+		b.recordMetric("POST", err, start)
+		return s3response.CompleteMultipartUploadResult{}, "", err
 	}
 
 	parts := make([]*castorv1.PartSummary, 0, len(input.MultipartUpload.Parts))
@@ -715,19 +949,29 @@ func (b *CastorBackend) CompleteMultipartUpload(ctx context.Context, input *s3.C
 		})
 	}
 
-	objInfo, err := b.engine.CompleteMultipartUpload(ctx, *input.Bucket, *input.Key, *input.UploadId, parts)
+	objInfo, err := b.engine.CompleteMultipartUpload(ctx, bucket, key, uploadID, parts)
 	if err != nil {
 		if errors.Is(err, storage.ErrNoSuchUpload) {
-			return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrNoSuchUpload)
+			err = s3err.GetAPIError(s3err.ErrNoSuchUpload)
+		} else if errors.Is(err, storage.ErrInvalidPart) {
+			err = s3err.GetAPIError(s3err.ErrInvalidPart)
+		} else if errors.Is(err, storage.ErrBucketNotFound) {
+			err = s3err.GetBucketErr(s3err.ErrNoSuchBucket, bucket)
 		}
-		if errors.Is(err, storage.ErrInvalidPart) {
-			return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrInvalidPart)
-		}
-		if errors.Is(err, storage.ErrBucketNotFound) {
-			return s3response.CompleteMultipartUploadResult{}, "", s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
-		}
+		b.recordMetric("POST", err, start)
+		b.logger.ErrorContext(ctx, "failed to complete multipart upload", "bucket", bucket, "key", key, "upload_id", uploadID, "error", err)
 		return s3response.CompleteMultipartUploadResult{}, "", err
 	}
+
+	b.recordMetric("POST", nil, start)
+	b.logger.InfoContext(ctx, "multipart upload completed",
+		"bucket", bucket,
+		"key", key,
+		"upload_id", uploadID,
+		"total_parts", len(parts),
+		"duration_ms", time.Since(start).Milliseconds(),
+		"status", "OK",
+	)
 
 	quotedETag := fmt.Sprintf("%q", objInfo.ETag)
 	res := s3response.CompleteMultipartUploadResult{
