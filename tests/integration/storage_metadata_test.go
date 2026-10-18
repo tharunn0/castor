@@ -86,7 +86,7 @@ func startTestMetadataNode(t *testing.T, nodeID string) (string, *consensus.Raft
 		RaftLogOutput: io.Discard,
 	}
 
-	raftNode, err := consensus.NewRaftNode(raftCfg, nil, fsm)
+	raftNode, err := consensus.NewRaftNode(raftCfg, fsm)
 	if err != nil {
 		_ = badgerStore.Close()
 		t.Fatalf("failed to initialize test Raft node: %v", err)

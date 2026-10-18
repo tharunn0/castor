@@ -8,12 +8,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
 	"github.com/tharunn0/castor/internal/metadata/config"
 	"github.com/tharunn0/castor/internal/metadata/store"
+	"github.com/tharunn0/castor/internal/metadata/telemetry"
+	telemetryPkg "github.com/tharunn0/castor/internal/telemetry"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
-func newTestRaftNode(t *testing.T, nodeID string, raftAddr string, peers map[string]string) (*RaftNode, *store.Store, string) {
+func newTestRaftNode(t *testing.T, nodeID string, raftAddr string, peers map[string]string, opts ...RaftOption) (*RaftNode, *store.Store, string) {
 	t.Helper()
 
 	tmpDir, err := os.MkdirTemp("", "raft-test-"+nodeID+"-*")
@@ -42,7 +48,7 @@ func newTestRaftNode(t *testing.T, nodeID string, raftAddr string, peers map[str
 		Peers:         peers,
 	}
 
-	node, err := NewRaftNode(cfg, nil, fsm)
+	node, err := NewRaftNode(cfg, fsm, opts...)
 	if err != nil {
 		t.Fatalf("failed to initialize raft node: %v", err)
 	}
@@ -146,5 +152,77 @@ func TestRaftNode_ErrorsWhenNotLeader(t *testing.T) {
 	}
 	if nle.Error() != "not the raft leader: leader is 127.0.0.1:9091" {
 		t.Fatalf("unexpected error message: %s", nle.Error())
+	}
+}
+
+func TestRaftNode_TelemetryAndMetrics(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	reg := prometheus.NewRegistry()
+	metrics := telemetry.NewMetadataMetrics("node-tel-1", &telemetryPkg.Metrics{Registry: reg})
+
+	node, _, _ := newTestRaftNode(t, "node-tel-1", "127.0.0.1:0", nil,
+		WithTracer(tp.Tracer("metadata-consensus-test")),
+		WithMetrics(metrics),
+	)
+
+	req := &castorv1.CreateBucketMetadataRequest{
+		Bucket:  "telemetry-bucket",
+		OwnerId: "user-telemetry",
+	}
+	cmd, err := NewCreateBucketCommand(req)
+	if err != nil {
+		t.Fatalf("failed to create command: %v", err)
+	}
+
+	ctx := context.Background()
+	_, err = node.ApplyContext(ctx, cmd, 3*time.Second)
+	if err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+
+	// Verify metrics
+	if val := testutil.ToFloat64(metrics.IsLeader); val != 1 {
+		t.Errorf("expected IsLeader to be 1, got %v", val)
+	}
+	if val := testutil.ToFloat64(metrics.LeaderElections); val < 1 {
+		t.Errorf("expected LeaderElections to be >= 1, got %v", val)
+	}
+
+	// Verify spans
+	spans := exporter.GetSpans()
+	var foundApplySpan bool
+	for _, span := range spans {
+		if span.Name == "Raft/Apply" {
+			foundApplySpan = true
+			var foundCmdType, foundNodeID bool
+			for _, attr := range span.Attributes {
+				if attr.Key == "raft.command_type" && attr.Value.AsString() == "CREATE_BUCKET" {
+					foundCmdType = true
+				}
+				if attr.Key == "raft.node_id" && attr.Value.AsString() == "node-tel-1" {
+					foundNodeID = true
+				}
+			}
+			if !foundCmdType {
+				t.Error("expected span attribute raft.command_type=CREATE_BUCKET")
+			}
+			if !foundNodeID {
+				t.Error("expected span attribute raft.node_id=node-tel-1")
+			}
+		}
+	}
+	if !foundApplySpan {
+		t.Fatal("expected Raft/Apply span to be recorded")
+	}
+
+	// Verify shutdown resets IsLeader
+	if err := node.Shutdown(); err != nil {
+		t.Fatalf("shutdown failed: %v", err)
+	}
+	if val := testutil.ToFloat64(metrics.IsLeader); val != 0 {
+		t.Errorf("expected IsLeader to be 0 after shutdown, got %v", val)
 	}
 }

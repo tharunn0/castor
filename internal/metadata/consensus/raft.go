@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -8,11 +9,18 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/hashicorp/raft"
 	raftboltdb "github.com/hashicorp/raft-boltdb/v2"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/tharunn0/castor/internal/metadata/config"
+	"github.com/tharunn0/castor/internal/metadata/telemetry"
+	telemetryPkg "github.com/tharunn0/castor/internal/telemetry"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -44,14 +52,38 @@ type RaftNode struct {
 	logStore      raft.LogStore
 	stableStore   raft.StableStore
 	snapshotStore raft.SnapshotStore
-	cfg           config.Config
-	logger        *slog.Logger
+	stopCh        chan struct{}
+	stopOnce      sync.Once
+	wg            sync.WaitGroup
+
+	cfg     config.Config
+	logger  *slog.Logger
+	tracer  trace.Tracer
+	metrics *telemetry.MetadataMetrics
 }
 
-func NewRaftNode(cfg config.Config, logger *slog.Logger, fsm *FSM) (*RaftNode, error) {
-	if logger == nil {
-		logger = slog.Default()
+type RaftOption func(*RaftNode)
+
+func WithTracer(tracer trace.Tracer) RaftOption {
+	return func(r *RaftNode) {
+		r.tracer = tracer
 	}
+}
+
+func WithMetrics(metrics *telemetry.MetadataMetrics) RaftOption {
+	return func(r *RaftNode) {
+		r.metrics = metrics
+	}
+}
+
+func WithLogger(logger *slog.Logger) RaftOption {
+	return func(r *RaftNode) {
+		r.logger = logger
+	}
+}
+
+func NewRaftNode(cfg config.Config, fsm *FSM, opts ...RaftOption) (*RaftNode, error) {
+
 	raftDir := filepath.Join(cfg.DataDir, "raft")
 	if err := os.MkdirAll(raftDir, 0755); err != nil {
 		return nil, err
@@ -136,7 +168,11 @@ func NewRaftNode(cfg config.Config, logger *slog.Logger, fsm *FSM) (*RaftNode, e
 		return nil, err
 	}
 
-	return &RaftNode{
+	defaultMetrics := telemetry.NewMetadataMetrics(cfg.NodeID, &telemetryPkg.Metrics{
+		Registry: prometheus.NewRegistry(),
+	})
+
+	node := &RaftNode{
 		raft:          raftInstance,
 		transport:     transport,
 		logStore:      boltStore,
@@ -144,20 +180,80 @@ func NewRaftNode(cfg config.Config, logger *slog.Logger, fsm *FSM) (*RaftNode, e
 		snapshotStore: snapshotStore,
 		fsm:           fsm,
 		cfg:           cfg,
-		logger:        logger,
-	}, nil
+		logger:        slog.New(slog.DiscardHandler),
+		tracer:        otel.GetTracerProvider().Tracer("metadata-svc"),
+		metrics:       defaultMetrics,
+		stopCh:        make(chan struct{}),
+	}
+
+	for _, opt := range opts {
+		opt(node)
+	}
+
+	node.metrics.IsLeader.Set(0)
+
+	node.wg.Add(1)
+	go node.monitorLeadership()
+
+	return node, nil
+}
+
+func (r *RaftNode) monitorLeadership() {
+	defer r.wg.Done()
+	leaderCh := r.raft.LeaderCh()
+	for {
+		select {
+		case <-r.stopCh:
+			return
+		case isLeader, ok := <-leaderCh:
+			if !ok {
+				return
+			}
+			if isLeader {
+				r.metrics.IsLeader.Set(1)
+				r.metrics.LeaderElections.Inc()
+				r.logger.Info("raft leadership change",
+					"event", "leadership_acquired",
+					"node_id", r.cfg.NodeID,
+					"term", r.raft.CurrentTerm(),
+					"leader_addr", r.LeaderAddr(),
+				)
+			} else {
+				r.metrics.IsLeader.Set(0)
+				r.logger.Info("raft leadership change",
+					"event", "leadership_lost",
+					"node_id", r.cfg.NodeID,
+					"new_leader_addr", r.LeaderAddr(),
+				)
+			}
+		}
+	}
 }
 
 func (r *RaftNode) Apply(cmd *Command, timeout time.Duration) (any, error) {
+	return r.ApplyContext(context.Background(), cmd, timeout)
+}
+
+func (r *RaftNode) ApplyContext(ctx context.Context, cmd *Command, timeout time.Duration) (any, error) {
 	if r.raft == nil {
 		return nil, ErrRaftNotInitialized
 	}
+
+	ctx, span := r.tracer.Start(ctx, "Raft/Apply",
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(
+			attribute.String("raft.command_type", cmd.Type.String()),
+			attribute.String("raft.node_id", r.cfg.NodeID),
+		),
+	)
+	defer span.End()
 
 	r.logger.Debug("[Raft Apply]", "cmd Type :", cmd.Type)
 
 	data, err := cmd.Encode()
 	if err != nil {
 		r.logger.Error("[Raft Apply] Encode Error", "error", err)
+		span.RecordError(err)
 		return nil, err
 	}
 
@@ -166,17 +262,28 @@ func (r *RaftNode) Apply(cmd *Command, timeout time.Duration) (any, error) {
 		if time.Until(deadline) <= 0 {
 			leader := r.LeaderAddr()
 			if leader == "" {
+				r.logger.Error("raft apply timeout; leader unavailable", "node_id", r.cfg.NodeID)
+				span.RecordError(ErrLeaderUnavailable)
 				return nil, ErrLeaderUnavailable
 			}
-			return nil, &NotLeaderError{LeaderAddr: leader, LeaderID: r.LeaderID()}
+			notLeaderErr := &NotLeaderError{LeaderAddr: leader, LeaderID: r.LeaderID()}
+			span.RecordError(notLeaderErr)
+			return nil, notLeaderErr
 		}
 
 		if !r.IsLeader() {
 			leader := r.LeaderAddr()
 			if leader != "" {
-				return nil, &NotLeaderError{LeaderAddr: leader, LeaderID: r.LeaderID()}
+				notLeaderErr := &NotLeaderError{LeaderAddr: leader, LeaderID: r.LeaderID()}
+				span.RecordError(notLeaderErr)
+				return nil, notLeaderErr
 			}
-			time.Sleep(20 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				span.RecordError(ctx.Err())
+				return nil, ctx.Err()
+			case <-time.After(20 * time.Millisecond):
+			}
 			continue
 		}
 
@@ -186,6 +293,7 @@ func (r *RaftNode) Apply(cmd *Command, timeout time.Duration) (any, error) {
 			r.logger.Debug("[Raft Apply] Success", "response", future.Response())
 			if res, ok := future.Response().(error); ok && res != nil {
 				r.logger.Error("[Raft Apply] Error", "error", res)
+				span.RecordError(res)
 				return res, nil
 			}
 			return future.Response(), nil
@@ -194,12 +302,21 @@ func (r *RaftNode) Apply(cmd *Command, timeout time.Duration) (any, error) {
 		if errors.Is(err, raft.ErrNotLeader) {
 			leader := r.LeaderAddr()
 			if leader != "" {
-				return nil, &NotLeaderError{LeaderAddr: leader, LeaderID: r.LeaderID()}
+				notLeaderErr := &NotLeaderError{LeaderAddr: leader, LeaderID: r.LeaderID()}
+				span.RecordError(notLeaderErr)
+				return nil, notLeaderErr
 			}
-			time.Sleep(20 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				span.RecordError(ctx.Err())
+				return nil, ctx.Err()
+			case <-time.After(20 * time.Millisecond):
+			}
 			continue
 		}
 
+		r.logger.Error("failed to apply raft log", "error", err, "node_id", r.cfg.NodeID, "cmd_type", cmd.Type.String())
+		span.RecordError(err)
 		return nil, err
 	}
 }
@@ -288,6 +405,13 @@ func (r *RaftNode) Leave(nodeID string) error {
 }
 
 func (r *RaftNode) Shutdown() error {
+	r.stopOnce.Do(func() {
+		close(r.stopCh)
+	})
+	r.wg.Wait()
+
+	r.metrics.IsLeader.Set(0)
+
 	var errs []error
 	if r.raft != nil {
 		future := r.raft.Shutdown()

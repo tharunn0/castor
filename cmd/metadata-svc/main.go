@@ -36,7 +36,7 @@ func main() {
 	logger := tel.Logger
 	cfg := config.Load()
 
-	_ = metatelemetry.NewMetadataMetrics(cfg.NodeID, tel.Metrics)
+	metaMetrics := metatelemetry.NewMetadataMetrics(cfg.NodeID, tel.Metrics)
 
 	logger.Info("starting metadata service",
 		"node_id", cfg.NodeID,
@@ -55,7 +55,11 @@ func main() {
 	}
 
 	fsm := consensus.NewFSM(dbStore, logger)
-	raftNode, err := consensus.NewRaftNode(cfg, logger, fsm)
+	raftNode, err := consensus.NewRaftNode(cfg, fsm,
+		consensus.WithLogger(logger),
+		consensus.WithMetrics(metaMetrics),
+		consensus.WithTracer(tel.Tracer),
+	)
 	if err != nil {
 		logger.Error("failed to initialize raft node", "error", err)
 		_ = dbStore.Close()
