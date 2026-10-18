@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log"
 
 	pb "github.com/tharunn0/castor/api/gen/go/castor/v1"
 	"github.com/tharunn0/castor/internal/data/config"
@@ -83,7 +84,11 @@ func (s *Server) GetChunk(req *pb.GetChunkRequest, stream grpc.ServerStreamingSe
 	if err != nil {
 		return status.Errorf(codes.NotFound, "chunk not found: %v", err)
 	}
-	defer rc.Close()
+	defer func() {
+		if err := rc.Close(); err != nil {
+			log.Printf("failed to close chunk reader: %v", err)
+		}
+	}()
 
 	buf := make([]byte, 64*1024)
 	for {
@@ -117,10 +122,9 @@ func (s *Server) ReplicateChunk(ctx context.Context, req *pb.ReplicateChunkReque
 }
 
 func (s *Server) HealthCheck(ctx context.Context, req *pb.HealthCheckRequest) (*pb.HealthCheckResponse, error) {
-
 	stats, err := s.store.GetDiskStats()
 	if err != nil {
-		// log error
+		return nil, status.Errorf(codes.Internal, "failed to get disk stats: %v", err)
 	}
 
 	return &pb.HealthCheckResponse{

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"path/filepath"
 	"strings"
@@ -25,6 +26,10 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
+
+func newTestLogger() *slog.Logger {
+	return slog.New(slog.DiscardHandler)
+}
 
 func TestBufferPoolAcquireRelease(t *testing.T) {
 	pool := NewBufferPool(1024, 2)
@@ -123,7 +128,7 @@ func startTestMetadataNode(t *testing.T, nodeID string) (string, castorv1.Metada
 		t.Fatalf("failed to open test metadata store: %v", err)
 	}
 
-	fsm := consensus.NewFSM(badgerStore)
+	fsm := consensus.NewFSM(badgerStore, newTestLogger())
 	raftCfg := metaconfig.Config{
 		NodeID:        nodeID,
 		RaftAddr:      "127.0.0.1:0",

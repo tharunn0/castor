@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"testing"
 
 	"github.com/dgraph-io/badger/v4"
@@ -13,6 +14,10 @@ import (
 	"github.com/tharunn0/castor/internal/metadata/store"
 	"google.golang.org/protobuf/proto"
 )
+
+func newTestLogger() *slog.Logger {
+	return slog.New(slog.DiscardHandler)
+}
 
 func newTestFSM(t *testing.T) (*FSM, *store.Store) {
 	t.Helper()
@@ -24,7 +29,7 @@ func newTestFSM(t *testing.T) (*FSM, *store.Store) {
 		_ = s.Close()
 	})
 
-	fsm := NewFSM(s)
+	fsm := NewFSM(s, newTestLogger())
 	return fsm, s
 }
 

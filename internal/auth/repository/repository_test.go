@@ -13,10 +13,11 @@ import (
 )
 
 func TestPostgresRepository_Interface(t *testing.T) {
-	var repo Repository = NewPostgresRepository(nil)
+	repo := NewPostgresRepository(nil)
 	if repo == nil {
 		t.Fatal("expected non-nil repository")
 	}
+	var _ Repository = repo
 
 	ctx := context.Background()
 

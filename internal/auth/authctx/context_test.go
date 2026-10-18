@@ -10,16 +10,17 @@ import (
 
 func TestAuthContext(t *testing.T) {
 	t.Run("nil context returns false", func(t *testing.T) {
-		if _, ok := FromContext(nil); ok {
+		var nilCtx context.Context
+		if _, ok := FromContext(nilCtx); ok {
 			t.Error("expected FromContext(nil) to return false")
 		}
-		if _, ok := UserID(nil); ok {
+		if _, ok := UserID(nilCtx); ok {
 			t.Error("expected UserID(nil) to return false")
 		}
-		if _, ok := Username(nil); ok {
+		if _, ok := Username(nilCtx); ok {
 			t.Error("expected Username(nil) to return false")
 		}
-		if _, ok := UserRole(nil); ok {
+		if _, ok := UserRole(nilCtx); ok {
 			t.Error("expected UserRole(nil) to return false")
 		}
 	})
@@ -81,7 +82,8 @@ func TestAuthContext(t *testing.T) {
 
 	t.Run("WithUser handles nil parent context", func(t *testing.T) {
 		expectedID := uuid.New()
-		ctx := WithUser(nil, UserContext{
+		var nilCtx context.Context
+		ctx := WithUser(nilCtx, UserContext{
 			UserID:   expectedID,
 			Username: "bob",
 			Role:     model.RoleUser,

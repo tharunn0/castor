@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -45,6 +46,7 @@ type HTTPClient struct {
 	baseURL    string
 	httpClient *http.Client
 	propagator propagation.TextMapPropagator
+	log        *slog.Logger
 }
 
 type ClientOption func(*HTTPClient)
@@ -62,6 +64,12 @@ func WithPropagator(p propagation.TextMapPropagator) ClientOption {
 		if p != nil {
 			c.propagator = p
 		}
+	}
+}
+
+func WithLogger(l *slog.Logger) ClientOption {
+	return func(c *HTTPClient) {
+		c.log = l
 	}
 }
 
@@ -99,7 +107,11 @@ func (c *HTTPClient) ValidateKey(ctx context.Context, accessKeyID string) (*Vali
 	if err != nil {
 		return nil, fmt.Errorf("execute request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			c.log.Error("failed to close response body", "error:", err)
+		}
+	}()
 
 	switch resp.StatusCode {
 	case http.StatusOK:

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"log/slog"
 	"net"
 	"path/filepath"
 	"testing"
@@ -17,6 +18,10 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
+
+func newTestLogger() *slog.Logger {
+	return slog.New(slog.DiscardHandler)
+}
 
 type directApplier struct {
 	fsm *consensus.FSM
@@ -51,7 +56,7 @@ func setupTestServer(t *testing.T) (castorv1.MetadataServiceClient, *store.Store
 		t.Fatalf("failed to open store: %v", err)
 	}
 
-	fsm := consensus.NewFSM(s)
+	fsm := consensus.NewFSM(s, newTestLogger())
 	applier := &directApplier{fsm: fsm}
 
 	lis := bufconn.Listen(1024 * 1024)

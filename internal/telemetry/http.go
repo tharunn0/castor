@@ -62,9 +62,9 @@ func FiberMiddleware(cfg FiberConfig) fiber.Handler {
 
 		// Extract incoming W3C trace context from request headers.
 		hdr := make(http.Header)
-		c.Request().Header.VisitAll(func(key, val []byte) {
+		for key, val := range c.Request().Header.All() {
 			hdr.Add(string(key), string(val))
-		})
+		}
 		extractedCtx := cfg.Propagator.Extract(reqCtx, propagation.HeaderCarrier(hdr))
 
 		method := c.Method()

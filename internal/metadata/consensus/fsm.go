@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"time"
 
 	"github.com/hashicorp/raft"
@@ -12,11 +13,13 @@ import (
 
 type FSM struct {
 	store *store.Store
+	log   *slog.Logger
 }
 
-func NewFSM(s *store.Store) *FSM {
+func NewFSM(s *store.Store, l *slog.Logger) *FSM {
 	return &FSM{
 		store: s,
+		log:   l,
 	}
 }
 
@@ -42,7 +45,11 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 }
 
 func (f *FSM) Restore(rc io.ReadCloser) error {
-	defer rc.Close()
+	defer func() {
+		if err := rc.Close(); err != nil {
+			f.log.Error("failed to close snapshot reader", "error: ", err)
+		}
+	}()
 	return f.store.Restore(rc)
 }
 

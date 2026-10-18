@@ -77,7 +77,7 @@ func startTestMetadataNode(t *testing.T, nodeID string) (string, *consensus.Raft
 		t.Fatalf("failed to open test metadata store: %v", err)
 	}
 
-	fsm := consensus.NewFSM(badgerStore)
+	fsm := consensus.NewFSM(badgerStore, newTestLogger())
 	raftCfg := metaconfig.Config{
 		NodeID:        nodeID,
 		RaftAddr:      "127.0.0.1:0",

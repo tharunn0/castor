@@ -1,0 +1,25 @@
+
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+
+  exclusions:
+    rules:
+      # Avoid noise from intentionally ignored errors in tests.
+      - path: '.*_test\.go'
+        linters:
+          - errcheck
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

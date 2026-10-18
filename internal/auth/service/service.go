@@ -132,7 +132,6 @@ func (s *Service) Login(ctx context.Context, req model.LoginRequest) (*model.Log
 		return nil, err
 	}
 
-	cmpCtx := ctx
 	cmpCtx, cmpSpan := s.tracer.Start(ctx, "auth.verify_password")
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
 		s.metrics.LoginAttemptsTotal.WithLabelValues("failure").Inc()

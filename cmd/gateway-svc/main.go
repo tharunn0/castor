@@ -40,18 +40,30 @@ func main() {
 		logger.Error("failed to connect to metadata service", "error", err, "addr", cfg.MetadataAddr)
 		os.Exit(1)
 	}
-	defer metaConn.Close()
+	defer func() {
+		if err := metaConn.Close(); err != nil {
+			logger.Error("failed to close metadata connection", "error", err)
+		}
+	}()
 	metaClient := castorv1.NewMetadataServiceClient(metaConn)
 
 	engine := storage.New(cfg, metaClient)
-	defer engine.Close()
+	defer func() {
+		if err := engine.Close(); err != nil {
+			logger.Error("gateway engine shutdown failed", "error", err)
+		}
+	}()
 
 	be := backend.New(engine, metaClient, logger)
 
 	authClient := gwauth.NewHTTPClient(cfg.AuthAddr)
 	iamBridge := gwauth.NewBridge(authClient, cfg.RootAccessKey, cfg.RootSecretKey, logger)
 	iamCache := gwauth.NewCachedBridge(iamBridge)
-	defer iamCache.Shutdown()
+	defer func() {
+		if err := iamCache.Shutdown(); err != nil {
+			logger.Error("cache shutdown failed", "error", err)
+		}
+	}()
 
 	healthApp := health.NewApp(cfg)
 	healthHandler := health.NewHandler(cfg)

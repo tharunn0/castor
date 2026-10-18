@@ -76,8 +76,10 @@ func (s *Storage) WriteChunk(r io.Reader, hashHex string) (*WriteResult, error) 
 		return nil, err
 	}
 	defer func() {
-		f.Close()
-		os.Remove(stagingPath) // no-op if renamed
+		if err := f.Close(); err != nil {
+			log.Println("staging file close error:", err)
+		}
+		_ = os.Remove(stagingPath) // no-op if renamed
 	}()
 
 	// ioLimitReader for limiting s.MaxChunkSize reads
@@ -103,7 +105,7 @@ func (s *Storage) WriteChunk(r io.Reader, hashHex string) (*WriteResult, error) 
 
 	if computedHash != hashHex {
 		log.Printf("expected %s , got %s\n", hashHex, computedHash)
-		return nil, fmt.Errorf("hash mismatch: \n")
+		return nil, fmt.Errorf("hash mismatch: expected %s, got %s", hashHex, computedHash)
 	}
 
 	// atomic rename to /data/chunks/xx/hash
@@ -116,8 +118,12 @@ func (s *Storage) WriteChunk(r io.Reader, hashHex string) (*WriteResult, error) 
 	}
 
 	if dir, err := os.Open(filepath.Dir(finalPath)); err == nil {
-		dir.Sync()
-		dir.Close()
+		if err := dir.Sync(); err != nil {
+			log.Println("dir sync error:", err)
+		}
+		if err := dir.Close(); err != nil {
+			log.Println("dir close error:", err)
+		}
 	}
 
 	return &WriteResult{
@@ -151,16 +157,14 @@ func (s *Storage) ReadChunk(hash string) (io.ReadCloser, error) {
 }
 
 func chunkPath(path, hashHex string) string {
-
-	os.MkdirAll(filepath.Join(path, hashHex[:2]), 0755)
-
 	if len(hashHex) < 2 {
 		return ""
 	}
 
 	shard := string(hashHex[:2])
+	_ = os.MkdirAll(filepath.Join(path, shard), 0755)
 
-	return filepath.Join(path, shard, "/", hashHex)
+	return filepath.Join(path, shard, hashHex)
 }
 
 // generate sha256 and return hex encoded string
@@ -172,9 +176,9 @@ func hashGen(data []byte) string {
 }
 
 var (
-	ErrChunkNotExist = errors.New("Chunk does not exist")
+	ErrChunkNotExist = errors.New("chunk does not exist")
 
-	ErrChunkSizeTooLarge = errors.New("Chunk size is too large")
+	ErrChunkSizeTooLarge = errors.New("chunk size is too large")
 
 	ErrHashMismatch = errors.New("expected and computed hash do not match")
 )

@@ -32,7 +32,7 @@ func newTestRaftNode(t *testing.T, nodeID string, raftAddr string, peers map[str
 		_ = s.Close()
 	})
 
-	fsm := NewFSM(s)
+	fsm := NewFSM(s, newTestLogger())
 
 	cfg := config.Config{
 		NodeID:        nodeID,
