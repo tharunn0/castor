@@ -13,4 +13,7 @@ echo "==> Running go vet ./..."
 
 go vet ./...
 
+echo "==> Running golangci-lint --new"
+golangci-lint run --new
+
 echo "==> Pre-commit checks passed."
