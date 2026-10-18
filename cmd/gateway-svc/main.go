@@ -63,14 +63,15 @@ func main() {
 	}()
 	metaClient := castorv1.NewMetadataServiceClient(metaConn)
 
-	engine := storage.New(cfg, metaClient)
+	gwMetrics := gwtelemetry.NewGatewayMetrics(tel.Metrics)
+
+	engine := storage.New(cfg, metaClient).WithMetrics(gwMetrics)
 	defer func() {
 		if err := engine.Close(); err != nil {
 			logger.Error("gateway engine shutdown failed", "error", err)
 		}
 	}()
 
-	gwMetrics := gwtelemetry.NewGatewayMetrics(tel.Metrics)
 	be := backend.New(engine, metaClient, logger).
 		WithTracer(tel.Tracer).
 		WithMetrics(gwMetrics)

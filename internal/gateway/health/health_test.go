@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/tharunn0/castor/internal/gateway/config"
+	"github.com/tharunn0/castor/internal/telemetry"
 )
 
 func TestHealthEndpoints(t *testing.T) {
@@ -46,5 +47,21 @@ func TestHealthEndpoints(t *testing.T) {
 		if payload["service"] != "gateway-svc" {
 			t.Errorf("expected service gateway-svc, got %v", payload["service"])
 		}
+	}
+}
+
+func TestMetricsEndpoint(t *testing.T) {
+	cfg := config.Config{}
+	app := NewApp(cfg)
+	telMetrics := telemetry.NewMetrics("test_health_app", "test")
+	app.Get("/metrics", telemetry.FiberPrometheusHandler(telMetrics))
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("request to /metrics failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200 for /metrics, got %d", resp.StatusCode)
 	}
 }

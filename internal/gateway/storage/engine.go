@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
 	"github.com/tharunn0/castor/internal/gateway/config"
+	gwtelemetry "github.com/tharunn0/castor/internal/gateway/telemetry"
 	"github.com/tharunn0/castor/internal/telemetry"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -61,6 +62,15 @@ type StorageEngine struct {
 	metaClients  map[string]castorv1.MetadataServiceClient
 	metaConns    map[string]*grpc.ClientConn
 	activeLeader string
+	metrics      *gwtelemetry.GatewayMetrics
+}
+
+func (e *StorageEngine) WithMetrics(m *gwtelemetry.GatewayMetrics) *StorageEngine {
+	e.metrics = m
+	if e.pool != nil {
+		e.pool.WithMetrics(m)
+	}
+	return e
 }
 
 func New(cfg config.Config, metaClient castorv1.MetadataServiceClient) *StorageEngine {

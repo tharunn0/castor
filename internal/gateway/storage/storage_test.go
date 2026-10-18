@@ -17,10 +17,12 @@ import (
 
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
 	"github.com/tharunn0/castor/internal/gateway/config"
+	gwtelemetry "github.com/tharunn0/castor/internal/gateway/telemetry"
 	metaconfig "github.com/tharunn0/castor/internal/metadata/config"
 	"github.com/tharunn0/castor/internal/metadata/consensus"
 	metaserver "github.com/tharunn0/castor/internal/metadata/server"
 	"github.com/tharunn0/castor/internal/metadata/store"
+	"github.com/tharunn0/castor/internal/telemetry"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -41,6 +43,19 @@ func TestBufferPoolAcquireRelease(t *testing.T) {
 	if len(*buf2) != 1024 {
 		t.Fatalf("expected buffer size 1024, got %d", len(*buf2))
 	}
+
+	pool.Release(buf1)
+	pool.Release(buf2)
+}
+
+func TestBufferPool_WithMetrics(t *testing.T) {
+	telMetrics := telemetry.NewMetrics("test_pool_metrics", "test")
+	gwMetrics := gwtelemetry.NewGatewayMetrics(telMetrics)
+
+	pool := NewBufferPool(2048, 2).WithMetrics(gwMetrics)
+
+	buf1 := pool.Acquire()
+	buf2 := pool.Acquire()
 
 	pool.Release(buf1)
 	pool.Release(buf2)
