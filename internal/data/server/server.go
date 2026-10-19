@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log"
 
@@ -109,8 +110,21 @@ func (s *Server) GetChunk(req *pb.GetChunkRequest, stream grpc.ServerStreamingSe
 }
 
 func (s *Server) DeleteChunk(ctx context.Context, req *pb.DeleteChunkRequest) (*pb.DeleteChunkResponse, error) {
+	chunkHash := req.GetChunkHash()
+	if chunkHash == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "chunk hash is required")
+	}
+
+	deleted, err := s.store.DeleteChunk(chunkHash)
+	if err != nil {
+		if errors.Is(err, storage.ErrInvalidHash) {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid chunk hash: %v", err)
+		}
+		return nil, status.Errorf(codes.Internal, "delete chunk: %v", err)
+	}
+
 	return &pb.DeleteChunkResponse{
-		Deleted: true,
+		Deleted: deleted,
 	}, nil
 }
 

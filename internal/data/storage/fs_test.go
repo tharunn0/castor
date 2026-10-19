@@ -3,6 +3,7 @@ package storage
 import (
 	"bytes"
 	"crypto/rand"
+	"errors"
 	"io"
 	"os"
 	"testing"
@@ -67,13 +68,91 @@ func TestWriteChunk_ChunkTooLarge(t *testing.T) {
 	}
 }
 
-// func TestWriteChunk_EmptyHash(t *testing.T) {
-// 	data := []byte("some chunk data")
+func TestDeleteChunk_Success(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := New(tmpDir, MaxChunkSize)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
 
-// 	path := filepath.Join(t.TempDir(), "chunk")
+	data, expectedHash, err := randomChunk(MaxChunkSize)
+	if err != nil {
+		t.Fatalf("randomChunk() failed: %v", err)
+	}
 
-// 	err := WriteChunk(path, data, "")
-// 	if err == nil {
-// 		t.Fatal("WriteChunk() expected error for empty hash, got nil")
-// 	}
-// }
+	res, err := store.WriteChunk(data, expectedHash)
+	if err != nil {
+		t.Fatalf("WriteChunk() failed: %v", err)
+	}
+
+	if _, err := os.Stat(res.Path); err != nil {
+		t.Fatalf("expected chunk file to exist at %s: %v", res.Path, err)
+	}
+
+	deleted, err := store.DeleteChunk(expectedHash)
+	if err != nil {
+		t.Fatalf("DeleteChunk() unexpected error: %v", err)
+	}
+	if !deleted {
+		t.Fatal("expected deleted = true for existing chunk")
+	}
+
+	if _, err := os.Stat(res.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected file to be removed, got err: %v", err)
+	}
+
+	if _, err := store.ReadChunk(expectedHash); !errors.Is(err, ErrChunkNotExist) {
+		t.Fatalf("expected ErrChunkNotExist, got: %v", err)
+	}
+
+	deletedAgain, err := store.DeleteChunk(expectedHash)
+	if err != nil {
+		t.Fatalf("second DeleteChunk() unexpected error: %v", err)
+	}
+	if deletedAgain {
+		t.Fatal("expected deleted = false on subsequent delete of same chunk")
+	}
+}
+
+func TestDeleteChunk_NotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := New(tmpDir, MaxChunkSize)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	const nonExistentHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	deleted, err := store.DeleteChunk(nonExistentHash)
+	if err != nil {
+		t.Fatalf("DeleteChunk() unexpected error: %v", err)
+	}
+	if deleted {
+		t.Fatal("expected deleted = false for non-existent chunk")
+	}
+}
+
+func TestDeleteChunk_InvalidHash(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := New(tmpDir, MaxChunkSize)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	invalidHashes := []string{
+		"",
+		"abcd",
+		"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+		"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
+		"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8555",
+	}
+
+	for _, hash := range invalidHashes {
+		deleted, err := store.DeleteChunk(hash)
+		if !errors.Is(err, ErrInvalidHash) {
+			t.Errorf("expected ErrInvalidHash for hash %q, got: %v", hash, err)
+		}
+		if deleted {
+			t.Errorf("expected deleted = false for invalid hash %q", hash)
+		}
+	}
+}
