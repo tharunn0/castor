@@ -230,3 +230,102 @@ func TestGetChunk_NotFound(t *testing.T) {
 		t.Errorf("expected NotFound code, got: %v", status.Code(err))
 	}
 }
+
+func TestDeleteChunk_Success(t *testing.T) {
+	client, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	payload := make([]byte, 128*1024)
+	_, _ = rand.Read(payload)
+	expectedHash := hashBytes(payload)
+
+	putStream, err := client.PutChunk(context.Background())
+	if err != nil {
+		t.Fatalf("open PutChunk stream: %v", err)
+	}
+	_ = putStream.Send(&pb.PutChunkRequest{
+		Data: &pb.PutChunkRequest_Metadata{
+			Metadata: &pb.PutChunkMetadata{
+				ChunkHash: expectedHash,
+				ChunkSize: int64(len(payload)),
+			},
+		},
+	})
+	_ = putStream.Send(&pb.PutChunkRequest{
+		Data: &pb.PutChunkRequest_ChunkBytes{
+			ChunkBytes: payload,
+		},
+	})
+	if _, err := putStream.CloseAndRecv(); err != nil {
+		t.Fatalf("setup write failed: %v", err)
+	}
+
+	deleteResp, err := client.DeleteChunk(context.Background(), &pb.DeleteChunkRequest{
+		ChunkHash: expectedHash,
+	})
+	if err != nil {
+		t.Fatalf("DeleteChunk failed: %v", err)
+	}
+	if !deleteResp.GetDeleted() {
+		t.Fatal("expected deleted = true")
+	}
+
+	getStream, err := client.GetChunk(context.Background(), &pb.GetChunkRequest{
+		ChunkHash: expectedHash,
+	})
+	if err != nil {
+		t.Fatalf("call GetChunk: %v", err)
+	}
+	_, err = getStream.Recv()
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("expected NotFound code after deletion, got: %v", status.Code(err))
+	}
+
+	deleteAgainResp, err := client.DeleteChunk(context.Background(), &pb.DeleteChunkRequest{
+		ChunkHash: expectedHash,
+	})
+	if err != nil {
+		t.Fatalf("second DeleteChunk failed: %v", err)
+	}
+	if deleteAgainResp.GetDeleted() {
+		t.Fatal("expected deleted = false on subsequent delete of same chunk")
+	}
+}
+
+func TestDeleteChunk_NotFound(t *testing.T) {
+	client, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	const nonExistentHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	resp, err := client.DeleteChunk(context.Background(), &pb.DeleteChunkRequest{
+		ChunkHash: nonExistentHash,
+	})
+	if err != nil {
+		t.Fatalf("DeleteChunk unexpected error: %v", err)
+	}
+	if resp.GetDeleted() {
+		t.Fatal("expected deleted = false for non-existent chunk")
+	}
+}
+
+func TestDeleteChunk_InvalidArgument(t *testing.T) {
+	client, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	invalidHashes := []string{
+		"",
+		"short",
+		"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+		"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
+		"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8555",
+	}
+
+	for _, hash := range invalidHashes {
+		_, err := client.DeleteChunk(context.Background(), &pb.DeleteChunkRequest{
+			ChunkHash: hash,
+		})
+		if status.Code(err) != codes.InvalidArgument {
+			t.Errorf("expected InvalidArgument for hash %q, got: %v", hash, status.Code(err))
+		}
+	}
+}
