@@ -156,6 +156,31 @@ func (s *Storage) ReadChunk(hash string) (io.ReadCloser, error) {
 	}, nil
 }
 
+func (s *Storage) DeleteChunk(hash string) (bool, error) {
+	if len(hash) != 64 {
+		return false, ErrInvalidHash
+	}
+	if _, err := hex.DecodeString(hash); err != nil {
+		return false, ErrInvalidHash
+	}
+
+	targetPath := filepath.Join(s.chunkPath, hash[:2], hash)
+
+	if err := os.Remove(targetPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("remove chunk: %w", err)
+	}
+
+	if dir, err := os.Open(filepath.Dir(targetPath)); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
+
+	return true, nil
+}
+
 func chunkPath(path, hashHex string) string {
 	if len(hashHex) < 2 {
 		return ""
@@ -181,4 +206,6 @@ var (
 	ErrChunkSizeTooLarge = errors.New("chunk size is too large")
 
 	ErrHashMismatch = errors.New("expected and computed hash do not match")
+
+	ErrInvalidHash = errors.New("invalid chunk hash")
 )
