@@ -7,9 +7,10 @@ import (
 )
 
 type NodeConfig struct {
-	NodeId   string
-	GRPCAddr string
-	DataDir  string
+	NodeId      string
+	GRPCAddr    string
+	MetricsAddr string
+	DataDir     string
 }
 
 func Load() NodeConfig {
@@ -17,12 +18,14 @@ func Load() NodeConfig {
 
 	id := getEnv("NODE_ID", "data-1")
 	grpcAddr := getEnv("GRPC_ADDR", ":9101")
+	metricsAddr := getEnv("METRICS_ADDR", ":9104")
 	dataDir := getEnv("DATA_DIR", "data")
 
 	return NodeConfig{
-		NodeId:   id,
-		GRPCAddr: grpcAddr,
-		DataDir:  dataDir,
+		NodeId:      id,
+		GRPCAddr:    grpcAddr,
+		MetricsAddr: metricsAddr,
+		DataDir:     dataDir,
 	}
 }
 

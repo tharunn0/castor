@@ -33,6 +33,6 @@ USER nonroot:nonroot
 
 VOLUME ["/data"]
 
-EXPOSE 9090 9091
+EXPOSE 9090 9091 9096
 
 ENTRYPOINT ["/bin/metadata-svc"]

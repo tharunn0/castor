@@ -1,16 +1,19 @@
 package storage
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/tharunn0/castor/internal/data/telemetry"
 )
 
 const (
@@ -24,10 +27,26 @@ type Storage struct {
 	stagingPath string
 
 	MaxChunkSize int
+
+	logger  *slog.Logger
+	metrics *telemetry.DataMetrics
 }
 
-func New(rootDir string, size int) (*Storage, error) {
+type Option func(*Storage)
 
+func WithLogger(logger *slog.Logger) Option {
+	return func(s *Storage) {
+		s.logger = logger
+	}
+}
+
+func WithMetrics(metrics *telemetry.DataMetrics) Option {
+	return func(s *Storage) {
+		s.metrics = metrics
+	}
+}
+
+func New(rootDir string, size int, opts ...Option) (*Storage, error) {
 	stagingDir := filepath.Join(rootDir, "staging")
 	chunkDir := filepath.Join(rootDir, "chunk")
 
@@ -38,65 +57,78 @@ func New(rootDir string, size int) (*Storage, error) {
 	if err := os.MkdirAll(chunkDir, 0755); err != nil {
 		return nil, fmt.Errorf("create chunks directory: %w", err)
 	}
-	return &Storage{
-		rootDir, chunkDir, stagingDir, size,
-	}, nil
+
+	s := &Storage{
+		rootDir:      rootDir,
+		chunkPath:    chunkDir,
+		stagingPath:  stagingDir,
+		MaxChunkSize: size,
+		logger:       slog.Default(),
+	}
+
+	for _, opt := range opts {
+		opt(s)
+	}
+	if s.logger == nil {
+		s.logger = slog.Default()
+	}
+
+	return s, nil
 }
 
 type WriteResult struct {
 	Hash string
-
 	Path string
-
 	Size int
 }
 
 type ReadResult struct {
 	io.Reader
-
 	io.Closer
-
 	Hash string
-
 	Path string
-
 	Data []byte
-
 	Size int
 }
 
-func (s *Storage) WriteChunk(r io.Reader, hashHex string) (*WriteResult, error) {
+func (s *Storage) WriteChunk(ctx context.Context, r io.Reader, hashHex string) (*WriteResult, error) {
+	start := time.Now()
 
-	// build the staging dir path
 	stagingPath := filepath.Join(s.stagingPath, uuid.New().String()+tmpSuffix)
 
 	f, err := os.Create(stagingPath)
 	if err != nil {
-		log.Println("staging file create error :", err)
+		if s.metrics != nil && s.metrics.ChunkWritesTotal != nil {
+			s.metrics.ChunkWritesTotal.WithLabelValues("error").Inc()
+		}
+		s.logger.Error("staging file create/write error", "error", err)
 		return nil, err
 	}
 	defer func() {
 		if err := f.Close(); err != nil {
-			log.Println("staging file close error:", err)
+			s.logger.Error("staging file close error", "error", err)
 		}
-		_ = os.Remove(stagingPath) // no-op if renamed
+		_ = os.Remove(stagingPath)
 	}()
 
-	// ioLimitReader for limiting s.MaxChunkSize reads
 	lReader := io.LimitReader(r, int64(s.MaxChunkSize)+1)
 
 	hasher := sha256.New()
-	// create multiWriter to write in to a hasher + file
 	mw := io.MultiWriter(f, hasher)
-
-	// use ioCopy to copy data from the source to multiWriter
 
 	n, err := io.Copy(mw, lReader)
 	if err != nil {
+		if s.metrics != nil && s.metrics.ChunkWritesTotal != nil {
+			s.metrics.ChunkWritesTotal.WithLabelValues("error").Inc()
+		}
+		s.logger.Error("staging file create/write error", "error", err)
 		return nil, fmt.Errorf("failed to read chunk body : %v", err)
 	}
 
 	if n > int64(s.MaxChunkSize) {
+		if s.metrics != nil && s.metrics.ChunkWritesTotal != nil {
+			s.metrics.ChunkWritesTotal.WithLabelValues("error").Inc()
+		}
 		return nil, ErrChunkSizeTooLarge
 	}
 
@@ -104,25 +136,52 @@ func (s *Storage) WriteChunk(r io.Reader, hashHex string) (*WriteResult, error) 
 	computedHash := hex.EncodeToString(hashb[:])
 
 	if computedHash != hashHex {
-		log.Printf("expected %s , got %s\n", hashHex, computedHash)
-		return nil, fmt.Errorf("hash mismatch: expected %s, got %s", hashHex, computedHash)
+		if s.metrics != nil {
+			if s.metrics.ChecksumMismatchesTotal != nil {
+				s.metrics.ChecksumMismatchesTotal.Inc()
+			}
+			if s.metrics.ChunkWritesTotal != nil {
+				s.metrics.ChunkWritesTotal.WithLabelValues("error").Inc()
+			}
+		}
+		s.logger.Error("chunk checksum mismatch", "expected", hashHex, "computed", computedHash, "size", n)
+		return nil, ErrHashMismatch
 	}
 
-	// atomic rename to /data/chunks/xx/hash
+	if err := f.Sync(); err != nil {
+		if s.metrics != nil && s.metrics.ChunkWritesTotal != nil {
+			s.metrics.ChunkWritesTotal.WithLabelValues("error").Inc()
+		}
+		s.logger.Error("staging file sync error", "error", err)
+		return nil, err
+	}
+
 	finalPath := chunkPath(s.chunkPath, computedHash)
 
 	err = os.Rename(stagingPath, finalPath)
 	if err != nil {
-		log.Println("rename error :", err)
+		if s.metrics != nil && s.metrics.ChunkWritesTotal != nil {
+			s.metrics.ChunkWritesTotal.WithLabelValues("error").Inc()
+		}
+		s.logger.Error("staging file create/write error", "error", err)
 		return nil, err
 	}
 
 	if dir, err := os.Open(filepath.Dir(finalPath)); err == nil {
 		if err := dir.Sync(); err != nil {
-			log.Println("dir sync error:", err)
+			s.logger.Error("dir sync error", "error", err)
 		}
 		if err := dir.Close(); err != nil {
-			log.Println("dir close error:", err)
+			s.logger.Error("dir close error", "error", err)
+		}
+	}
+
+	if s.metrics != nil {
+		if s.metrics.ChunkWriteDuration != nil {
+			s.metrics.ChunkWriteDuration.Observe(time.Since(start).Seconds())
+		}
+		if s.metrics.ChunkWritesTotal != nil {
+			s.metrics.ChunkWritesTotal.WithLabelValues("success").Inc()
 		}
 	}
 
@@ -134,8 +193,6 @@ func (s *Storage) WriteChunk(r io.Reader, hashHex string) (*WriteResult, error) 
 }
 
 func (s *Storage) ReadChunk(hash string) (io.ReadCloser, error) {
-
-	// build target path
 	chunkPath := filepath.Join(s.chunkPath, string(hash[:2]), hash)
 
 	if _, err := os.Stat(chunkPath); err != nil {
@@ -192,11 +249,8 @@ func chunkPath(path, hashHex string) string {
 	return filepath.Join(path, shard, hashHex)
 }
 
-// generate sha256 and return hex encoded string
 func hashGen(data []byte) string {
-
 	b := sha256.Sum256(data)
-
 	return hex.EncodeToString(b[:])
 }
 

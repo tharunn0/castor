@@ -2,11 +2,17 @@ package storage
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"errors"
 	"io"
 	"os"
 	"testing"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/tharunn0/castor/internal/data/telemetry"
+	telpkg "github.com/tharunn0/castor/internal/telemetry"
 )
 
 const MaxChunkSize = 4 << 20
@@ -33,7 +39,7 @@ func TestWriteChunk_Success(t *testing.T) {
 		t.Fatalf("Failed to initialize storage : %v", err)
 	}
 
-	res, err := store.WriteChunk(data, expectedHash)
+	res, err := store.WriteChunk(context.Background(), data, expectedHash)
 	if err != nil {
 		t.Fatalf("WriteChunk() unexpected error: %v", err)
 	}
@@ -62,7 +68,7 @@ func TestWriteChunk_ChunkTooLarge(t *testing.T) {
 
 	store, _ := New(tmpDir, MaxChunkSize)
 
-	_, err := store.WriteChunk(data, exHash)
+	_, err := store.WriteChunk(context.Background(), data, exHash)
 	if err == nil {
 		t.Fatal("WriteChunk() expected error for chunk larger than 4 MiB, got nil")
 	}
@@ -80,7 +86,8 @@ func TestDeleteChunk_Success(t *testing.T) {
 		t.Fatalf("randomChunk() failed: %v", err)
 	}
 
-	res, err := store.WriteChunk(data, expectedHash)
+	res, err := store.WriteChunk(context.Background(), data, expectedHash)
+
 	if err != nil {
 		t.Fatalf("WriteChunk() failed: %v", err)
 	}
@@ -154,5 +161,66 @@ func TestDeleteChunk_InvalidHash(t *testing.T) {
 		if deleted {
 			t.Errorf("expected deleted = false for invalid hash %q", hash)
 		}
+	}
+}
+
+func TestWriteChunk_Telemetry(t *testing.T) {
+	tmpDir := t.TempDir()
+	reg := prometheus.NewRegistry()
+	metrics := telemetry.NewDataMetrics("test-node", &telpkg.Metrics{Registry: reg})
+
+	store, err := New(tmpDir, MaxChunkSize, WithMetrics(metrics))
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	data, expectedHash, err := randomChunk(1024 * 64)
+	if err != nil {
+		t.Fatalf("randomChunk() failed: %v", err)
+	}
+
+	res, err := store.WriteChunk(context.Background(), data, expectedHash)
+	if err != nil {
+		t.Fatalf("WriteChunk() failed: %v", err)
+	}
+	if res.Hash != expectedHash {
+		t.Fatalf("expected hash %q, got %q", expectedHash, res.Hash)
+	}
+
+	successCount := testutil.ToFloat64(metrics.ChunkWritesTotal.WithLabelValues("success"))
+	if successCount != 1 {
+		t.Errorf("expected success count 1, got %f", successCount)
+	}
+}
+
+func TestWriteChunk_ChecksumMismatch(t *testing.T) {
+	tmpDir := t.TempDir()
+	reg := prometheus.NewRegistry()
+	metrics := telemetry.NewDataMetrics("test-node", &telpkg.Metrics{Registry: reg})
+
+	store, err := New(tmpDir, MaxChunkSize, WithMetrics(metrics))
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	data, _, err := randomChunk(1024 * 64)
+	if err != nil {
+		t.Fatalf("randomChunk() failed: %v", err)
+	}
+
+	wrongHash := "0000000000000000000000000000000000000000000000000000000000000000"
+	_, err = store.WriteChunk(context.Background(), data, wrongHash)
+	if !errors.Is(err, ErrHashMismatch) {
+		t.Fatalf("expected ErrHashMismatch, got %v", err)
+	}
+
+	mismatches := testutil.ToFloat64(metrics.ChecksumMismatchesTotal)
+	if mismatches != 1 {
+		t.Errorf("expected mismatches count 1, got %f", mismatches)
+	}
+
+	errorCount := testutil.ToFloat64(metrics.ChunkWritesTotal.WithLabelValues("error"))
+	if errorCount != 1 {
+		t.Errorf("expected error count 1, got %f", errorCount)
 	}
 }
