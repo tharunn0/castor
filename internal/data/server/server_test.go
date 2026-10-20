@@ -10,12 +10,22 @@ import (
 	"net"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	pb "github.com/tharunn0/castor/api/gen/go/castor/v1"
 	"github.com/tharunn0/castor/internal/data/config"
 	"github.com/tharunn0/castor/internal/data/storage"
+	"github.com/tharunn0/castor/internal/data/telemetry"
+	telpkg "github.com/tharunn0/castor/internal/telemetry"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
@@ -327,5 +337,191 @@ func TestDeleteChunk_InvalidArgument(t *testing.T) {
 		if status.Code(err) != codes.InvalidArgument {
 			t.Errorf("expected InvalidArgument for hash %q, got: %v", hash, status.Code(err))
 		}
+	}
+}
+
+func TestHealthCheck(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := storage.New(tmpDir, 4<<20)
+	if err != nil {
+		t.Fatalf("setup storage: %v", err)
+	}
+
+	reg := prometheus.NewRegistry()
+	metrics := telemetry.NewDataMetrics("test-node-hc", &telpkg.Metrics{Registry: reg})
+
+	srv := New(store, config.NodeConfig{NodeId: "test-node-hc"}, WithMetrics(metrics))
+	resp, err := srv.HealthCheck(context.Background(), &pb.HealthCheckRequest{})
+	if err != nil {
+		t.Fatalf("HealthCheck unexpected error: %v", err)
+	}
+
+	if resp.GetNodeId() != "test-node-hc" {
+		t.Errorf("expected NodeId 'test-node-hc', got %q", resp.GetNodeId())
+	}
+	if resp.GetStatus() != "SERVING" {
+		t.Errorf("expected Status 'SERVING', got %q", resp.GetStatus())
+	}
+	if resp.GetTotalBytes() == 0 {
+		t.Error("expected non-zero TotalBytes")
+	}
+
+	totalMetric := testutil.ToFloat64(metrics.DiskCapacity.WithLabelValues("total"))
+	if totalMetric != float64(resp.GetTotalBytes()) {
+		t.Errorf("metric TotalBytes %f != resp TotalBytes %d", totalMetric, resp.GetTotalBytes())
+	}
+}
+
+func TestServer_TelemetryAndTracing(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	otel.SetTracerProvider(tp)
+
+	reg := prometheus.NewRegistry()
+	metrics := telemetry.NewDataMetrics("test-node-trace", &telpkg.Metrics{Registry: reg})
+
+	tmpDir := t.TempDir()
+	store, err := storage.New(tmpDir, 4<<20, storage.WithMetrics(metrics))
+	if err != nil {
+		t.Fatalf("setup storage: %v", err)
+	}
+
+	lis := bufconn.Listen(1024 * 1024)
+	srv := grpc.NewServer(
+		grpc.StatsHandler(otelgrpc.NewServerHandler(
+			otelgrpc.WithFilter(func(info *stats.RPCTagInfo) bool {
+				return info == nil || info.FullMethodName != "/castor.v1.DataService/HealthCheck"
+			}),
+		)),
+	)
+	dataSrv := New(store, config.NodeConfig{NodeId: "test-node-trace"}, WithMetrics(metrics))
+	pb.RegisterDataServiceServer(srv, dataSrv)
+
+	go func() {
+		_ = srv.Serve(lis)
+	}()
+
+	conn, err := grpc.NewClient(
+		"passthrough://bufnet",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return lis.Dial()
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+	)
+	if err != nil {
+		t.Fatalf("dial bufnet: %v", err)
+	}
+	defer func() {
+		_ = conn.Close()
+		srv.Stop()
+		_ = lis.Close()
+	}()
+
+	client := pb.NewDataServiceClient(conn)
+
+	// 1. HealthCheck should be filtered out from tracing
+	_, err = client.HealthCheck(context.Background(), &pb.HealthCheckRequest{})
+	if err != nil {
+		t.Fatalf("HealthCheck failed: %v", err)
+	}
+
+	spans := exporter.GetSpans()
+	for _, span := range spans {
+		if span.SpanKind == trace.SpanKindServer && span.Name == "castor.v1.DataService/HealthCheck" {
+			t.Errorf("expected HealthCheck server span to be filtered out of traces, but found: %s", span.Name)
+		}
+	}
+
+	// 2. PutChunk should generate Data/PutChunk span with attributes
+	payload := make([]byte, 64*1024)
+	_, _ = rand.Read(payload)
+	expectedHash := hashBytes(payload)
+
+	stream, err := client.PutChunk(context.Background())
+	if err != nil {
+		t.Fatalf("PutChunk failed: %v", err)
+	}
+	_ = stream.Send(&pb.PutChunkRequest{
+		Data: &pb.PutChunkRequest_Metadata{
+			Metadata: &pb.PutChunkMetadata{
+				ChunkHash: expectedHash,
+				ChunkSize: int64(len(payload)),
+			},
+		},
+	})
+	_ = stream.Send(&pb.PutChunkRequest{
+		Data: &pb.PutChunkRequest_ChunkBytes{
+			ChunkBytes: payload,
+		},
+	})
+	_, err = stream.CloseAndRecv()
+	if err != nil {
+		t.Fatalf("stream.CloseAndRecv failed: %v", err)
+	}
+
+	// 3. ReplicateChunk should generate Data/ReplicateChunk span
+	repResp, err := client.ReplicateChunk(context.Background(), &pb.ReplicateChunkRequest{
+		ChunkHash:         expectedHash,
+		SourceNodeAddress: "127.0.0.1:9102",
+	})
+	if err != nil || !repResp.GetSuccess() {
+		t.Fatalf("ReplicateChunk failed: %v", err)
+	}
+
+	spans = exporter.GetSpans()
+	foundPutChunk := false
+	foundReplicateChunk := false
+
+	for _, s := range spans {
+		if s.Name == "Data/PutChunk" {
+			foundPutChunk = true
+			attrs := make(map[string]any)
+			for _, a := range s.Attributes {
+				attrs[string(a.Key)] = a.Value.AsInterface()
+			}
+			if attrs["data.node_id"] != "test-node-trace" {
+				t.Errorf("expected data.node_id 'test-node-trace', got %v", attrs["data.node_id"])
+			}
+			if attrs["chunk.hash"] != expectedHash {
+				t.Errorf("expected chunk.hash %q, got %v", expectedHash, attrs["chunk.hash"])
+			}
+			if attrs["chunk.size_bytes"] != int64(len(payload)) {
+				t.Errorf("expected chunk.size_bytes %d, got %v", len(payload), attrs["chunk.size_bytes"])
+			}
+		}
+		if s.Name == "Data/ReplicateChunk" {
+			foundReplicateChunk = true
+			attrs := make(map[string]any)
+			for _, a := range s.Attributes {
+				attrs[string(a.Key)] = a.Value.AsInterface()
+			}
+			if attrs["data.node_id"] != "test-node-trace" {
+				t.Errorf("expected data.node_id 'test-node-trace', got %v", attrs["data.node_id"])
+			}
+			if attrs["chunk.hash"] != expectedHash {
+				t.Errorf("expected chunk.hash %q, got %v", expectedHash, attrs["chunk.hash"])
+			}
+			if attrs["chunk.source_node"] != "127.0.0.1:9102" {
+				t.Errorf("expected chunk.source_node '127.0.0.1:9102', got %v", attrs["chunk.source_node"])
+			}
+		}
+		if s.SpanKind == trace.SpanKindServer && s.Name == "castor.v1.DataService/HealthCheck" {
+			t.Errorf("found filtered HealthCheck server span: %s", s.Name)
+		}
+	}
+
+	if !foundPutChunk {
+		t.Error("expected Data/PutChunk span not found")
+	}
+	if !foundReplicateChunk {
+		t.Error("expected Data/ReplicateChunk span not found")
+	}
+
+	writesSuccess := testutil.ToFloat64(metrics.ChunkWritesTotal.WithLabelValues("success"))
+	if writesSuccess != 1 {
+		t.Errorf("expected writesSuccess 1, got %f", writesSuccess)
 	}
 }
