@@ -206,6 +206,34 @@ func (s *Server) CheckBucketExists(ctx context.Context, req *castorv1.CheckBucke
 	return &castorv1.CheckBucketExistsResponse{Exists: exists}, nil
 }
 
+func (s *Server) CheckChunks(ctx context.Context, req *castorv1.CheckChunksRequest) (*castorv1.CheckChunksResponse, error) {
+	ctx, span := s.tracer.Start(ctx, "Metadata/CheckChunks",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			attribute.Int("chunks.count", len(req.GetChunkHashes())),
+		),
+	)
+	defer span.End()
+
+	if len(req.GetChunkHashes()) == 0 {
+		return &castorv1.CheckChunksResponse{
+			ExistingChunks: make(map[string]bool),
+		}, nil
+	}
+
+	existsMap, err := s.store.CheckChunks(ctx, req.GetChunkHashes())
+	if err != nil {
+		s.logger.ErrorContext(ctx, "failed to check chunks", "error", err)
+		grpcErr := toGRPCError(err)
+		span.RecordError(grpcErr)
+		return nil, grpcErr
+	}
+
+	return &castorv1.CheckChunksResponse{
+		ExistingChunks: existsMap,
+	}, nil
+}
+
 func (s *Server) CommitManifest(ctx context.Context, req *castorv1.CommitManifestRequest) (*castorv1.CommitManifestResponse, error) {
 	ctx, span := s.tracer.Start(ctx, "Metadata/CommitManifest",
 		trace.WithSpanKind(trace.SpanKindServer),

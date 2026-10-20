@@ -305,6 +305,82 @@ func TestServer_ObjectOperations(t *testing.T) {
 	}
 }
 
+func TestServer_CheckChunks(t *testing.T) {
+	client, _, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// 1. Empty chunk hashes list returns empty map
+	emptyRes, err := client.CheckChunks(ctx, &castorv1.CheckChunksRequest{
+		ChunkHashes: []string{},
+	})
+	if err != nil {
+		t.Fatalf("CheckChunks with empty hashes failed: %v", err)
+	}
+	if len(emptyRes.GetExistingChunks()) != 0 {
+		t.Fatalf("expected empty map, got: %v", emptyRes.GetExistingChunks())
+	}
+
+	// 2. Query non-existent hash returns false
+	nonExistentRes, err := client.CheckChunks(ctx, &castorv1.CheckChunksRequest{
+		ChunkHashes: []string{"hash-not-present"},
+	})
+	if err != nil {
+		t.Fatalf("CheckChunks with non-existent hash failed: %v", err)
+	}
+	if nonExistentRes.GetExistingChunks()["hash-not-present"] {
+		t.Fatalf("expected false for non-existent hash, got true")
+	}
+
+	// 3. Create bucket and commit object with chunks
+	_, err = client.CreateBucket(ctx, &castorv1.CreateBucketMetadataRequest{
+		Bucket:  "dedup-bucket",
+		OwnerId: "user-123",
+	})
+	if err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	hashA := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	hashB := "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
+
+	_, err = client.CommitManifest(ctx, &castorv1.CommitManifestRequest{
+		Bucket:      "dedup-bucket",
+		Key:         "file.bin",
+		Size:        8192,
+		Etag:        "test-etag",
+		ContentType: "application/octet-stream",
+		ChunkIds:    []string{hashA, hashB},
+		ChunkPlacements: []*castorv1.ChunkPlacement{
+			{ChunkHash: hashA, NodeAddresses: []string{"node1:9101"}, Size: 4096},
+			{ChunkHash: hashB, NodeAddresses: []string{"node1:9101"}, Size: 4096},
+		},
+		OwnerId: "user-123",
+	})
+	if err != nil {
+		t.Fatalf("CommitManifest failed: %v", err)
+	}
+
+	// 4. Query mixture of existing and non-existing chunk hashes
+	checkRes, err := client.CheckChunks(ctx, &castorv1.CheckChunksRequest{
+		ChunkHashes: []string{hashA, hashB, "hash-missing"},
+	})
+	if err != nil {
+		t.Fatalf("CheckChunks query failed: %v", err)
+	}
+	existing := checkRes.GetExistingChunks()
+	if !existing[hashA] {
+		t.Errorf("expected hashA to exist, got false")
+	}
+	if !existing[hashB] {
+		t.Errorf("expected hashB to exist, got false")
+	}
+	if existing["hash-missing"] {
+		t.Errorf("expected hash-missing to be false, got true")
+	}
+}
+
 func TestServer_NodeDiscoveryOperations(t *testing.T) {
 	client, _, cleanup := setupTestServer(t)
 	defer cleanup()
