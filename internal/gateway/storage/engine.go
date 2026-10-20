@@ -350,6 +350,7 @@ func (e *StorageEngine) PutObject(ctx context.Context, bucket, key, ownerID stri
 	var placements []*castorv1.ChunkPlacement
 	var totalSize int64
 	objHasher := sha256.New()
+	seenInUpload := make(map[string]bool)
 
 	if reader != nil {
 		bufPtr := e.pool.Acquire()
@@ -366,23 +367,44 @@ func (e *StorageEngine) PutObject(ctx context.Context, bucket, key, ownerID stri
 				chunkHash := hex.EncodeToString(h[:])
 				objHasher.Write(chunkBytes)
 
-				targets, err := e.placement.SelectNodes(len(e.cfg.DataNodes))
-				if err != nil {
-					return "", err
-				}
-
-				successfulNodes, err := e.placement.WriteChunkQuorum(ctx, chunkHash, chunkBytes, targets)
-				if err != nil {
-					return "", err
-				}
-
 				chunkIDs = append(chunkIDs, chunkHash)
-				placements = append(placements, &castorv1.ChunkPlacement{
-					ChunkHash:     chunkHash,
-					NodeAddresses: successfulNodes,
-					Size:          int64(n),
-				})
 				totalSize += int64(n)
+
+				if !seenInUpload[chunkHash] {
+					var exists bool
+					err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+						resp, err := client.CheckChunks(ctx, &castorv1.CheckChunksRequest{
+							ChunkHashes: []string{chunkHash},
+						})
+						if err != nil {
+							return err
+						}
+						exists = resp.GetExistingChunks()[chunkHash]
+						return nil
+					})
+					if err != nil {
+						return "", err
+					}
+
+					if !exists {
+						targets, err := e.placement.SelectNodes(len(e.cfg.DataNodes))
+						if err != nil {
+							return "", err
+						}
+
+						successfulNodes, err := e.placement.WriteChunkQuorum(ctx, chunkHash, chunkBytes, targets)
+						if err != nil {
+							return "", err
+						}
+
+						placements = append(placements, &castorv1.ChunkPlacement{
+							ChunkHash:     chunkHash,
+							NodeAddresses: successfulNodes,
+							Size:          int64(n),
+						})
+					}
+					seenInUpload[chunkHash] = true
+				}
 			}
 
 			if readErr != nil {
@@ -882,6 +904,7 @@ func (e *StorageEngine) UploadPart(ctx context.Context, bucket, key, uploadID st
 	var placements []*castorv1.ChunkPlacement
 	var totalSize int64
 	partHasher := sha256.New()
+	seenInUpload := make(map[string]bool)
 
 	if reader != nil {
 		bufPtr := e.pool.Acquire()
@@ -898,23 +921,44 @@ func (e *StorageEngine) UploadPart(ctx context.Context, bucket, key, uploadID st
 				chunkHash := hex.EncodeToString(h[:])
 				partHasher.Write(chunkBytes)
 
-				targets, err := e.placement.SelectNodes(len(e.cfg.DataNodes))
-				if err != nil {
-					return "", err
-				}
-
-				successfulNodes, err := e.placement.WriteChunkQuorum(ctx, chunkHash, chunkBytes, targets)
-				if err != nil {
-					return "", err
-				}
-
 				chunkIDs = append(chunkIDs, chunkHash)
-				placements = append(placements, &castorv1.ChunkPlacement{
-					ChunkHash:     chunkHash,
-					NodeAddresses: successfulNodes,
-					Size:          int64(n),
-				})
 				totalSize += int64(n)
+
+				if !seenInUpload[chunkHash] {
+					var exists bool
+					err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+						resp, err := client.CheckChunks(ctx, &castorv1.CheckChunksRequest{
+							ChunkHashes: []string{chunkHash},
+						})
+						if err != nil {
+							return err
+						}
+						exists = resp.GetExistingChunks()[chunkHash]
+						return nil
+					})
+					if err != nil {
+						return "", err
+					}
+
+					if !exists {
+						targets, err := e.placement.SelectNodes(len(e.cfg.DataNodes))
+						if err != nil {
+							return "", err
+						}
+
+						successfulNodes, err := e.placement.WriteChunkQuorum(ctx, chunkHash, chunkBytes, targets)
+						if err != nil {
+							return "", err
+						}
+
+						placements = append(placements, &castorv1.ChunkPlacement{
+							ChunkHash:     chunkHash,
+							NodeAddresses: successfulNodes,
+							Size:          int64(n),
+						})
+					}
+					seenInUpload[chunkHash] = true
+				}
 			}
 
 			if readErr != nil {

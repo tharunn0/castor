@@ -300,6 +300,95 @@ func TestStorageEngine_PutObject(t *testing.T) {
 	}
 }
 
+func TestStorageEngine_PutObject_Deduplication(t *testing.T) {
+	node1Addr, cleanup1 := startTestDataNode(t, "data-dedup-1")
+	defer cleanup1()
+	node2Addr, cleanup2 := startTestDataNode(t, "data-dedup-2")
+	defer cleanup2()
+	node3Addr, cleanup3 := startTestDataNode(t, "data-dedup-3")
+	defer cleanup3()
+
+	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-dedup")
+	defer metaCleanup()
+
+	cfg := config.Config{
+		ChunkSize:            4 << 20,
+		WriteQuorum:          2,
+		MaxConcurrentUploads: 4,
+		DataNodes:            []string{node1Addr, node2Addr, node3Addr},
+	}
+
+	engine := New(cfg, metaClient)
+	defer engine.Close()
+
+	ctx := context.Background()
+
+	_, err := metaClient.CreateBucket(ctx, &castorv1.CreateBucketMetadataRequest{
+		Bucket:  "dedup-bucket",
+		OwnerId: "user1",
+	})
+	if err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	// Payload strictly greater than 4MiB chunk size (5MiB)
+	payload := make([]byte, 5*1024*1024)
+	_, _ = rand.Read(payload)
+	h := sha256.Sum256(payload)
+	expectedETag := hex.EncodeToString(h[:])
+
+	etag1, err := engine.PutObject(ctx, "dedup-bucket", "obj1.bin", "user1", bytes.NewReader(payload), int64(len(payload)))
+	if err != nil {
+		t.Fatalf("first PutObject failed: %v", err)
+	}
+	if etag1 != expectedETag {
+		t.Fatalf("etag1 mismatch: expected %s, got %s", expectedETag, etag1)
+	}
+
+	etag2, err := engine.PutObject(ctx, "dedup-bucket", "obj2.bin", "user1", bytes.NewReader(payload), int64(len(payload)))
+	if err != nil {
+		t.Fatalf("second PutObject (dedup) failed: %v", err)
+	}
+	if etag2 != expectedETag {
+		t.Fatalf("etag2 mismatch: expected %s, got %s", expectedETag, etag2)
+	}
+
+	// Verify obj2 is fully readable
+	rc, objInfo, err := engine.GetObject(ctx, "dedup-bucket", "obj2.bin")
+	if err != nil {
+		t.Fatalf("GetObject obj2 failed: %v", err)
+	}
+	readBytes, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil {
+		t.Fatalf("reading obj2 failed: %v", err)
+	}
+	if !bytes.Equal(readBytes, payload) {
+		t.Fatal("read bytes mismatch for obj2")
+	}
+	if objInfo.Size != int64(len(payload)) {
+		t.Fatalf("size mismatch: expected %d, got %d", len(payload), objInfo.Size)
+	}
+
+	// Delete obj1; obj2 must remain readable
+	if err := engine.DeleteObject(ctx, "dedup-bucket", "obj1.bin"); err != nil {
+		t.Fatalf("DeleteObject obj1 failed: %v", err)
+	}
+
+	rc2, _, err := engine.GetObject(ctx, "dedup-bucket", "obj2.bin")
+	if err != nil {
+		t.Fatalf("GetObject obj2 after deleting obj1 failed: %v", err)
+	}
+	readBytes2, err := io.ReadAll(rc2)
+	_ = rc2.Close()
+	if err != nil {
+		t.Fatalf("reading obj2 after deleting obj1 failed: %v", err)
+	}
+	if !bytes.Equal(readBytes2, payload) {
+		t.Fatal("read bytes mismatch after deleting obj1")
+	}
+}
+
 func TestStorageEngine_GetObject(t *testing.T) {
 	node1Addr, cleanup1 := startTestDataNode(t, "data-1")
 	defer cleanup1()
@@ -967,5 +1056,91 @@ func TestStorageEngine_MultipartUpload(t *testing.T) {
 	// Completing an aborted upload fails with ErrNoSuchUpload
 	if _, err := engine.CompleteMultipartUpload(ctx, bucketName, "abort-file.bin", abortUploadID, nil); !errors.Is(err, ErrNoSuchUpload) {
 		t.Fatalf("expected ErrNoSuchUpload when completing aborted upload, got %v", err)
+	}
+}
+
+func TestStorageEngine_UploadPart_Deduplication(t *testing.T) {
+	node1Addr, cleanup1 := startTestDataNode(t, "data-mp-dedup-1")
+	defer cleanup1()
+	node2Addr, cleanup2 := startTestDataNode(t, "data-mp-dedup-2")
+	defer cleanup2()
+	node3Addr, cleanup3 := startTestDataNode(t, "data-mp-dedup-3")
+	defer cleanup3()
+
+	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-mp-dedup")
+	defer metaCleanup()
+
+	cfg := config.Config{
+		ChunkSize:            4 << 20,
+		WriteQuorum:          2,
+		MaxConcurrentUploads: 4,
+		DataNodes:            []string{node1Addr, node2Addr, node3Addr},
+	}
+
+	engine := New(cfg, metaClient)
+	defer engine.Close()
+
+	ctx := context.Background()
+	bucket := "mp-dedup-bucket"
+
+	if err := engine.CreateBucket(ctx, bucket, "admin", nil); err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	uploadID, err := engine.InitiateMultipartUpload(ctx, bucket, "dedup-multi.bin", "application/octet-stream")
+	if err != nil {
+		t.Fatalf("InitiateMultipartUpload failed: %v", err)
+	}
+
+	// Payload strictly greater than 4MiB chunk size (5MiB)
+	partPayload := make([]byte, 5*1024*1024)
+	_, _ = rand.Read(partPayload)
+
+	// Upload Part 1
+	etag1, err := engine.UploadPart(ctx, bucket, "dedup-multi.bin", uploadID, 1, bytes.NewReader(partPayload), int64(len(partPayload)))
+	if err != nil {
+		t.Fatalf("UploadPart 1 failed: %v", err)
+	}
+
+	// Upload Part 2 with identical content (deduplicated against Part 1)
+	etag2, err := engine.UploadPart(ctx, bucket, "dedup-multi.bin", uploadID, 2, bytes.NewReader(partPayload), int64(len(partPayload)))
+	if err != nil {
+		t.Fatalf("UploadPart 2 (dedup) failed: %v", err)
+	}
+	if etag1 != etag2 {
+		t.Fatalf("expected identical etags for identical parts, got %s and %s", etag1, etag2)
+	}
+
+	// Complete multipart upload
+	parts := []*castorv1.PartSummary{
+		{PartNumber: 1, Etag: etag1},
+		{PartNumber: 2, Etag: etag2},
+	}
+	objInfo, err := engine.CompleteMultipartUpload(ctx, bucket, "dedup-multi.bin", uploadID, parts)
+	if err != nil {
+		t.Fatalf("CompleteMultipartUpload failed: %v", err)
+	}
+	expectedTotalSize := int64(len(partPayload) * 2)
+	if objInfo.Size != expectedTotalSize {
+		t.Fatalf("expected total size %d, got %d", expectedTotalSize, objInfo.Size)
+	}
+
+	// Read back and verify both parts are completely readable
+	rc, info, err := engine.GetObject(ctx, bucket, "dedup-multi.bin")
+	if err != nil {
+		t.Fatalf("GetObject failed: %v", err)
+	}
+	defer rc.Close()
+
+	if info.Size != expectedTotalSize {
+		t.Fatalf("expected object info size %d, got %d", expectedTotalSize, info.Size)
+	}
+	downloaded, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("failed to read full object: %v", err)
+	}
+	expectedFullPayload := append(partPayload, partPayload...)
+	if !bytes.Equal(downloaded, expectedFullPayload) {
+		t.Fatal("downloaded payload mismatch for deduplicated multipart object")
 	}
 }
