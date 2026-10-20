@@ -65,16 +65,18 @@ func main() {
 
 	gwMetrics := gwtelemetry.NewGatewayMetrics(tel.Metrics)
 
-	engine := storage.New(cfg, metaClient).WithMetrics(gwMetrics)
+	engine := storage.New(cfg, metaClient).WithMetrics(gwMetrics).WithLogger(logger)
 	defer func() {
 		if err := engine.Close(); err != nil {
 			logger.Error("gateway engine shutdown failed", "error", err)
 		}
 	}()
 
-	be := backend.New(engine, metaClient, logger).
-		WithTracer(tel.Tracer).
-		WithMetrics(gwMetrics)
+	be := backend.New(engine, metaClient,
+		backend.WithLogger(logger),
+		backend.WithTracer(tel.Tracer),
+		backend.WithMetrics(gwMetrics),
+	)
 
 	authClient := gwauth.NewHTTPClient(cfg.AuthAddr)
 	iamBridge := gwauth.NewBridge(authClient, cfg.RootAccessKey, cfg.RootSecretKey, logger)

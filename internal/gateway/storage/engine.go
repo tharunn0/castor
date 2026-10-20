@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"slices"
 	"strconv"
@@ -63,12 +64,20 @@ type StorageEngine struct {
 	metaConns    map[string]*grpc.ClientConn
 	activeLeader string
 	metrics      *gwtelemetry.GatewayMetrics
+	logger       *slog.Logger
 }
 
 func (e *StorageEngine) WithMetrics(m *gwtelemetry.GatewayMetrics) *StorageEngine {
 	e.metrics = m
 	if e.pool != nil {
 		e.pool.WithMetrics(m)
+	}
+	return e
+}
+
+func (e *StorageEngine) WithLogger(l *slog.Logger) *StorageEngine {
+	if l != nil {
+		e.logger = l
 	}
 	return e
 }
@@ -104,6 +113,7 @@ func New(cfg config.Config, metaClient castorv1.MetadataServiceClient) *StorageE
 		metaClients:  metaClients,
 		metaConns:    metaConns,
 		activeLeader: activeLeader,
+		logger:       slog.Default(),
 	}
 }
 
@@ -349,6 +359,7 @@ func (e *StorageEngine) PutObject(ctx context.Context, bucket, key, ownerID stri
 	var chunkIDs []string
 	var placements []*castorv1.ChunkPlacement
 	var totalSize int64
+	var dedupedChunks int
 	objHasher := sha256.New()
 	seenInUpload := make(map[string]bool)
 
@@ -370,7 +381,9 @@ func (e *StorageEngine) PutObject(ctx context.Context, bucket, key, ownerID stri
 				chunkIDs = append(chunkIDs, chunkHash)
 				totalSize += int64(n)
 
-				if !seenInUpload[chunkHash] {
+				if seenInUpload[chunkHash] {
+					dedupedChunks++
+				} else {
 					var exists bool
 					err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
 						resp, err := client.CheckChunks(ctx, &castorv1.CheckChunksRequest{
@@ -386,7 +399,9 @@ func (e *StorageEngine) PutObject(ctx context.Context, bucket, key, ownerID stri
 						return "", err
 					}
 
-					if !exists {
+					if exists {
+						dedupedChunks++
+					} else {
 						targets, err := e.placement.SelectNodes(len(e.cfg.DataNodes))
 						if err != nil {
 							return "", err
@@ -436,6 +451,23 @@ func (e *StorageEngine) PutObject(ctx context.Context, bucket, key, ownerID stri
 		}
 		return "", err
 	}
+
+	totalChunks := len(chunkIDs)
+	newChunks := totalChunks - dedupedChunks
+	var dedupPct float64
+	if totalChunks > 0 {
+		dedupPct = float64(dedupedChunks) / float64(totalChunks) * 100
+	}
+
+	e.logger.InfoContext(ctx, "object uploaded",
+		"bucket", bucket,
+		"key", key,
+		"total_chunks", totalChunks,
+		"deduped_chunks", dedupedChunks,
+		"new_chunks", newChunks,
+		"dedup_pct", fmt.Sprintf("%.1f%%", dedupPct),
+		"size_bytes", totalSize,
+	)
 
 	return etag, nil
 }
@@ -903,6 +935,7 @@ func (e *StorageEngine) UploadPart(ctx context.Context, bucket, key, uploadID st
 	var chunkIDs []string
 	var placements []*castorv1.ChunkPlacement
 	var totalSize int64
+	var dedupedChunks int
 	partHasher := sha256.New()
 	seenInUpload := make(map[string]bool)
 
@@ -924,7 +957,9 @@ func (e *StorageEngine) UploadPart(ctx context.Context, bucket, key, uploadID st
 				chunkIDs = append(chunkIDs, chunkHash)
 				totalSize += int64(n)
 
-				if !seenInUpload[chunkHash] {
+				if seenInUpload[chunkHash] {
+					dedupedChunks++
+				} else {
 					var exists bool
 					err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
 						resp, err := client.CheckChunks(ctx, &castorv1.CheckChunksRequest{
@@ -940,7 +975,9 @@ func (e *StorageEngine) UploadPart(ctx context.Context, bucket, key, uploadID st
 						return "", err
 					}
 
-					if !exists {
+					if exists {
+						dedupedChunks++
+					} else {
 						targets, err := e.placement.SelectNodes(len(e.cfg.DataNodes))
 						if err != nil {
 							return "", err
@@ -994,6 +1031,24 @@ func (e *StorageEngine) UploadPart(ctx context.Context, bucket, key, uploadID st
 		}
 		return "", err
 	}
+
+	totalChunks := len(chunkIDs)
+	newChunks := totalChunks - dedupedChunks
+	var dedupPct float64
+	if totalChunks > 0 {
+		dedupPct = float64(dedupedChunks) / float64(totalChunks) * 100
+	}
+
+	e.logger.InfoContext(ctx, "object uploaded",
+		"bucket", bucket,
+		"key", key,
+		"part_number", partNumber,
+		"total_chunks", totalChunks,
+		"deduped_chunks", dedupedChunks,
+		"new_chunks", newChunks,
+		"dedup_pct", fmt.Sprintf("%.1f%%", dedupPct),
+		"size_bytes", totalSize,
+	)
 
 	return etag, nil
 }

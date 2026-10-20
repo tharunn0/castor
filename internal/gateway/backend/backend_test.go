@@ -182,7 +182,7 @@ func TestCastorBackend_PutObject(t *testing.T) {
 	engine := storage.New(cfg, metaClient)
 	defer engine.Close()
 
-	be := New(engine, metaClient, newTestLogger())
+	be := New(engine, metaClient, WithLogger(newTestLogger()))
 	ctx := context.Background()
 
 	// 1. Missing bucket name
@@ -268,7 +268,7 @@ func TestCastorBackend_GetObject(t *testing.T) {
 	engine := storage.New(cfg, metaClient)
 	defer engine.Close()
 
-	be := New(engine, metaClient, newTestLogger())
+	be := New(engine, metaClient, WithLogger(newTestLogger()))
 	ctx := context.Background()
 
 	// 1. Validation errors
@@ -473,7 +473,7 @@ func TestCastorBackend_CreateBucket(t *testing.T) {
 	engine := storage.New(cfg, metaClient)
 	defer engine.Close()
 
-	be := New(engine, metaClient, newTestLogger())
+	be := New(engine, metaClient, WithLogger(newTestLogger()))
 	ctx := context.Background()
 
 	// 1. Invalid bucket name (nil, empty)
@@ -534,7 +534,7 @@ func TestCastorBackend_ListBuckets(t *testing.T) {
 	engine := storage.New(cfg, metaClient)
 	defer engine.Close()
 
-	be := New(engine, metaClient, newTestLogger())
+	be := New(engine, metaClient, WithLogger(newTestLogger()))
 	ctx := context.Background()
 
 	// 1. Initial listing is empty
@@ -621,7 +621,7 @@ func TestCastorBackend_DeleteBucket(t *testing.T) {
 	engine := storage.New(cfg, metaClient)
 	defer engine.Close()
 
-	be := New(engine, metaClient, newTestLogger())
+	be := New(engine, metaClient, WithLogger(newTestLogger()))
 	ctx := context.Background()
 
 	// 1. Empty bucket name returns ErrInvalidBucketName
@@ -692,7 +692,7 @@ func TestCastorBackend_DeleteObject(t *testing.T) {
 	engine := storage.New(cfg, metaClient)
 	defer engine.Close()
 
-	be := New(engine, metaClient, newTestLogger())
+	be := New(engine, metaClient, WithLogger(newTestLogger()))
 	ctx := context.Background()
 
 	if _, err := be.DeleteObject(ctx, nil); !errors.Is(err, s3err.GetAPIError(s3err.ErrInvalidBucketName)) {
@@ -786,7 +786,7 @@ func TestCastorBackend_ListObjectsV2(t *testing.T) {
 	engine := storage.New(cfg, metaClient)
 	defer engine.Close()
 
-	be := New(engine, metaClient, newTestLogger())
+	be := New(engine, metaClient, WithLogger(newTestLogger()))
 	ctx := context.Background()
 
 	// 1. Validation errors
@@ -948,7 +948,7 @@ func TestCastorBackend_HeadObject(t *testing.T) {
 	engine := storage.New(cfg, metaClient)
 	defer engine.Close()
 
-	be := New(engine, metaClient, newTestLogger())
+	be := New(engine, metaClient, WithLogger(newTestLogger()))
 	ctx := context.Background()
 
 	emptyStr := ""
@@ -1065,7 +1065,7 @@ func TestCastorBackend_GetBucketAcl(t *testing.T) {
 	engine := storage.New(cfg, metaClient)
 	defer engine.Close()
 
-	be := New(engine, metaClient, newTestLogger())
+	be := New(engine, metaClient, WithLogger(newTestLogger()))
 	ctx := context.Background()
 
 	nonExistent := "nonexistent-bucket"
@@ -1126,7 +1126,7 @@ func TestCastorBackend_MultipartUpload(t *testing.T) {
 	engine := storage.New(cfg, metaClient)
 	defer engine.Close()
 
-	be := New(engine, metaClient, newTestLogger())
+	be := New(engine, metaClient, WithLogger(newTestLogger()))
 	ctx := context.Background()
 
 	// 1. Validation for CreateMultipartUpload

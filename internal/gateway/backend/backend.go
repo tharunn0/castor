@@ -38,27 +38,58 @@ type CastorBackend struct {
 
 var _ backend.Backend = (*CastorBackend)(nil)
 
-func New(engine *storage.StorageEngine, metaClient castorv1.MetadataServiceClient, l *slog.Logger) *CastorBackend {
-	if l == nil {
-		l = slog.Default()
-	}
-	return &CastorBackend{
-		engine:     engine,
-		metaClient: metaClient,
-		logger:     l,
-		tracer:     telemetry.GetTracer("gateway-svc"),
+type Option func(*CastorBackend)
+
+func WithLogger(l *slog.Logger) Option {
+	return func(b *CastorBackend) {
+		if l != nil {
+			b.logger = l
+			if b.engine != nil {
+				b.engine.WithLogger(l)
+			}
+		}
 	}
 }
 
-func (b *CastorBackend) WithTracer(tr trace.Tracer) *CastorBackend {
-	if tr != nil {
-		b.tracer = tr
+func WithTracer(tr trace.Tracer) Option {
+	return func(b *CastorBackend) {
+		if tr != nil {
+			b.tracer = tr
+		}
+	}
+}
+
+func WithMetrics(m *gwtelemetry.GatewayMetrics) Option {
+	return func(b *CastorBackend) {
+		b.metrics = m
+	}
+}
+
+func New(engine *storage.StorageEngine, metaClient castorv1.MetadataServiceClient, opts ...Option) *CastorBackend {
+	b := &CastorBackend{
+		engine:     engine,
+		metaClient: metaClient,
+		logger:     slog.Default(),
+		tracer:     telemetry.GetTracer("gateway-svc"),
+	}
+	for _, opt := range opts {
+		opt(b)
 	}
 	return b
 }
 
+func (b *CastorBackend) WithTracer(tr trace.Tracer) *CastorBackend {
+	WithTracer(tr)(b)
+	return b
+}
+
 func (b *CastorBackend) WithMetrics(m *gwtelemetry.GatewayMetrics) *CastorBackend {
-	b.metrics = m
+	WithMetrics(m)(b)
+	return b
+}
+
+func (b *CastorBackend) WithLogger(l *slog.Logger) *CastorBackend {
+	WithLogger(l)(b)
 	return b
 }
 

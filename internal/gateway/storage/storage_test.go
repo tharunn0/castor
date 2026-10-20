@@ -1144,3 +1144,85 @@ func TestStorageEngine_UploadPart_Deduplication(t *testing.T) {
 		t.Fatal("downloaded payload mismatch for deduplicated multipart object")
 	}
 }
+
+func TestStorageEngine_DeduplicationLogging(t *testing.T) {
+	node1Addr, cleanup1 := startTestDataNode(t, "data-log-1")
+	defer cleanup1()
+	node2Addr, cleanup2 := startTestDataNode(t, "data-log-2")
+	defer cleanup2()
+	node3Addr, cleanup3 := startTestDataNode(t, "data-log-3")
+	defer cleanup3()
+
+	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-log")
+	defer metaCleanup()
+
+	cfg := config.Config{
+		ChunkSize:            4 << 20,
+		WriteQuorum:          2,
+		MaxConcurrentUploads: 4,
+		DataNodes:            []string{node1Addr, node2Addr, node3Addr},
+	}
+
+	var logBuf bytes.Buffer
+	testLogger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+
+	engine := New(cfg, metaClient).WithLogger(testLogger)
+	defer engine.Close()
+
+	ctx := context.Background()
+	bucket := "log-test-bucket"
+
+	if err := engine.CreateBucket(ctx, bucket, "admin", nil); err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	// 5MiB payload (> 4MiB chunk size = 2 chunks: 4MiB + 1MiB)
+	payload := make([]byte, 5*1024*1024)
+	_, _ = rand.Read(payload)
+
+	// 1. Initial upload: 0% deduplication
+	logBuf.Reset()
+	_, err := engine.PutObject(ctx, bucket, "file1.bin", "user1", bytes.NewReader(payload), int64(len(payload)))
+	if err != nil {
+		t.Fatalf("first PutObject failed: %v", err)
+	}
+	log1 := logBuf.String()
+	if !strings.Contains(log1, `"msg":"object uploaded"`) {
+		t.Fatalf("expected log 'object uploaded', got: %s", log1)
+	}
+	if !strings.Contains(log1, `"total_chunks":2`) || !strings.Contains(log1, `"deduped_chunks":0`) || !strings.Contains(log1, `"new_chunks":2`) || !strings.Contains(log1, `"dedup_pct":"0.0%"`) {
+		t.Fatalf("unexpected first upload log content: %s", log1)
+	}
+
+	// 2. Duplicate upload: 100% deduplication
+	logBuf.Reset()
+	_, err = engine.PutObject(ctx, bucket, "file2.bin", "user1", bytes.NewReader(payload), int64(len(payload)))
+	if err != nil {
+		t.Fatalf("second PutObject failed: %v", err)
+	}
+	log2 := logBuf.String()
+	if !strings.Contains(log2, `"msg":"object uploaded"`) {
+		t.Fatalf("expected log 'object uploaded', got: %s", log2)
+	}
+	if !strings.Contains(log2, `"total_chunks":2`) || !strings.Contains(log2, `"deduped_chunks":2`) || !strings.Contains(log2, `"new_chunks":0`) || !strings.Contains(log2, `"dedup_pct":"100.0%"`) {
+		t.Fatalf("unexpected second upload log content: %s", log2)
+	}
+
+	// 3. Multipart upload: Part 1 (deduped chunks = 2 since payload already exists)
+	uploadID, err := engine.InitiateMultipartUpload(ctx, bucket, "mp-file.bin", "application/octet-stream")
+	if err != nil {
+		t.Fatalf("InitiateMultipartUpload failed: %v", err)
+	}
+	logBuf.Reset()
+	_, err = engine.UploadPart(ctx, bucket, "mp-file.bin", uploadID, 1, bytes.NewReader(payload), int64(len(payload)))
+	if err != nil {
+		t.Fatalf("UploadPart failed: %v", err)
+	}
+	logPart := logBuf.String()
+	if !strings.Contains(logPart, `"msg":"object uploaded"`) {
+		t.Fatalf("expected log 'object uploaded', got: %s", logPart)
+	}
+	if !strings.Contains(logPart, `"part_number":1`) || !strings.Contains(logPart, `"dedup_pct":"100.0%"`) {
+		t.Fatalf("unexpected part upload log content: %s", logPart)
+	}
+}
