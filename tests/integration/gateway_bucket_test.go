@@ -69,7 +69,7 @@ func TestIntegration_GatewayCreateBucket(t *testing.T) {
 	engine := gwstorage.New(cfg, metaClient)
 	defer engine.Close()
 
-	be := gwbackend.New(engine, metaClient, newTestLogger())
+	be := gwbackend.New(engine, metaClient, gwbackend.WithLogger(newTestLogger()))
 
 	gwCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()

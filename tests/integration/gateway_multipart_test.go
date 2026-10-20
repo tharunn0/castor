@@ -61,7 +61,7 @@ func setupMultipartGateway(t *testing.T) (s3Client *s3.Client, metaClient castor
 	}
 
 	engine := gwstorage.New(cfg, metaClient)
-	be := gwbackend.New(engine, metaClient, newTestLogger())
+	be := gwbackend.New(engine, metaClient, gwbackend.WithLogger(newTestLogger()))
 
 	gwCtx, cancel := context.WithCancel(context.Background())
 	gwCfg := &embedgw.Config{

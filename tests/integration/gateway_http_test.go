@@ -86,7 +86,7 @@ func TestIntegration_GatewayHTTP(t *testing.T) {
 	engine := gwstorage.New(cfg, metaClient)
 	defer engine.Close()
 
-	be := gwbackend.New(engine, metaClient, newTestLogger())
+	be := gwbackend.New(engine, metaClient, gwbackend.WithLogger(newTestLogger()))
 
 	// 1. Start Fiber HTTP health endpoint
 	healthApp := gwhealth.NewApp(cfg)

@@ -92,7 +92,7 @@ func TestIntegration_GatewayDynamicSigV4(t *testing.T) {
 	engine := gwstorage.New(cfg, metaClient)
 	defer engine.Close()
 
-	be := gwbackend.New(engine, metaClient, newTestLogger())
+	be := gwbackend.New(engine, metaClient, gwbackend.WithLogger(newTestLogger()))
 
 	authClient := gwauth.NewHTTPClient(cfg.AuthAddr)
 	iamBridge := gwauth.NewBridge(authClient, cfg.RootAccessKey, cfg.RootSecretKey, newTestLogger())
