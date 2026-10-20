@@ -11,17 +11,24 @@ services:
       - NODE_ID=${METADATA_1_NODE_ID:-metadata-1}
       - GRPC_ADDR=${METADATA_1_GRPC_ADDR:-:9090}
       - RAFT_ADDR=${METADATA_1_RAFT_ADDR:-metadata-1:9091}
+      - METRICS_ADDR=${METADATA_1_METRICS_ADDR:-:9096}
       - DATA_DIR=${METADATA_1_DATA_DIR:-/data}
       - RAFT_BOOTSTRAP=true
       - RAFT_PEERS=${RAFT_PEERS:-metadata-1=metadata-1:9091,metadata-2=metadata-2:9091,metadata-3=metadata-3:9091}
       - RAFT_LOG_OUTPUT=discard
+      - APP_ENV=${APP_ENV:-dev}
+      - TRACE_OTLP_ENABLED=${TRACE_OTLP_ENABLED:-true}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
     ports:
       - "${METADATA_1_PORT:-9090}:9090"
       - "${METADATA_1_RAFT_PORT:-9091}:9091"
+      - "${METADATA_1_METRICS_PORT:-9096}:9096"
     volumes:
       - metadata-1-data:/data
     networks:
       - castor-net
+    depends_on:
+      - otel-collector
     restart: unless-stopped
 
   metadata-2:
@@ -35,18 +42,24 @@ services:
       - NODE_ID=${METADATA_2_NODE_ID:-metadata-2}
       - GRPC_ADDR=${METADATA_2_GRPC_ADDR:-:9090}
       - RAFT_ADDR=${METADATA_2_RAFT_ADDR:-metadata-2:9091}
+      - METRICS_ADDR=${METADATA_2_METRICS_ADDR:-:9096}
       - DATA_DIR=${METADATA_2_DATA_DIR:-/data}
       - RAFT_BOOTSTRAP=false
       - RAFT_PEERS=${RAFT_PEERS:-metadata-1=metadata-1:9091,metadata-2=metadata-2:9091,metadata-3=metadata-3:9091}
       - RAFT_LOG_OUTPUT=discard
+      - APP_ENV=${APP_ENV:-dev}
+      - TRACE_OTLP_ENABLED=${TRACE_OTLP_ENABLED:-true}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
     ports:
       - "${METADATA_2_PORT:-9092}:9090"
+      - "${METADATA_2_METRICS_PORT:-9097}:9096"
     volumes:
       - metadata-2-data:/data
     networks:
       - castor-net
     depends_on:
       - metadata-1
+      - otel-collector
     restart: unless-stopped
 
   metadata-3:
@@ -60,18 +73,24 @@ services:
       - NODE_ID=${METADATA_3_NODE_ID:-metadata-3}
       - GRPC_ADDR=${METADATA_3_GRPC_ADDR:-:9090}
       - RAFT_ADDR=${METADATA_3_RAFT_ADDR:-metadata-3:9091}
+      - METRICS_ADDR=${METADATA_3_METRICS_ADDR:-:9096}
       - DATA_DIR=${METADATA_3_DATA_DIR:-/data}
       - RAFT_BOOTSTRAP=false
       - RAFT_PEERS=${RAFT_PEERS:-metadata-1=metadata-1:9091,metadata-2=metadata-2:9091,metadata-3=metadata-3:9091}
       - RAFT_LOG_OUTPUT=discard
+      - APP_ENV=${APP_ENV:-dev}
+      - TRACE_OTLP_ENABLED=${TRACE_OTLP_ENABLED:-true}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
     ports:
       - "${METADATA_3_PORT:-9094}:9090"
+      - "${METADATA_3_METRICS_PORT:-9098}:9096"
     volumes:
       - metadata-3-data:/data
     networks:
       - castor-net
     depends_on:
       - metadata-1
+      - otel-collector
     restart: unless-stopped
 
   # Storage Data Nodes (3 Nodes)
@@ -85,13 +104,20 @@ services:
     environment:
       - NODE_ID=${DATA_1_NODE_ID:-data-1}
       - GRPC_ADDR=${DATA_1_GRPC_ADDR:-:9101}
+      - METRICS_ADDR=${DATA_1_METRICS_ADDR:-:9104}
       - DATA_DIR=${DATA_1_DATA_DIR:-/data}
+      - APP_ENV=${APP_ENV:-dev}
+      - TRACE_OTLP_ENABLED=${TRACE_OTLP_ENABLED:-true}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
     ports:
       - "${DATA_1_PORT:-9101}:9101"
+      - "${DATA_1_METRICS_PORT:-9104}:9104"
     volumes:
       - data-1-data:/data
     networks:
       - castor-net
+    depends_on:
+      - otel-collector
     restart: unless-stopped
 
   data-2:
@@ -104,13 +130,20 @@ services:
     environment:
       - NODE_ID=${DATA_2_NODE_ID:-data-2}
       - GRPC_ADDR=${DATA_2_GRPC_ADDR:-:9101}
+      - METRICS_ADDR=${DATA_2_METRICS_ADDR:-:9104}
       - DATA_DIR=${DATA_2_DATA_DIR:-/data}
+      - APP_ENV=${APP_ENV:-dev}
+      - TRACE_OTLP_ENABLED=${TRACE_OTLP_ENABLED:-true}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
     ports:
       - "${DATA_2_PORT:-9102}:9101"
+      - "${DATA_2_METRICS_PORT:-9105}:9104"
     volumes:
       - data-2-data:/data
     networks:
       - castor-net
+    depends_on:
+      - otel-collector
     restart: unless-stopped
 
   data-3:
@@ -123,16 +156,23 @@ services:
     environment:
       - NODE_ID=${DATA_3_NODE_ID:-data-3}
       - GRPC_ADDR=${DATA_3_GRPC_ADDR:-:9101}
+      - METRICS_ADDR=${DATA_3_METRICS_ADDR:-:9104}
       - DATA_DIR=${DATA_3_DATA_DIR:-/data}
+      - APP_ENV=${APP_ENV:-dev}
+      - TRACE_OTLP_ENABLED=${TRACE_OTLP_ENABLED:-true}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
     ports:
       - "${DATA_3_PORT:-9103}:9101"
+      - "${DATA_3_METRICS_PORT:-9106}:9104"
     volumes:
       - data-3-data:/data
     networks:
       - castor-net
+    depends_on:
+      - otel-collector
     restart: unless-stopped
 
-  # S3 API Gateway
+  # castor Gateway
   gateway:
     build:
       context: ../../
@@ -152,6 +192,9 @@ services:
       - WRITE_QUORUM=${WRITE_QUORUM:-2}
       - CHUNK_SIZE=${CHUNK_SIZE:-4194304}
       - MAX_CONCURRENT_UPLOADS=${MAX_CONCURRENT_UPLOADS:-64}
+      - APP_ENV=${APP_ENV:-dev}
+      - TRACE_OTLP_ENABLED=${TRACE_OTLP_ENABLED:-true}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
     ports:
       - "${S3_PORT:-9000}:9000"
       - "${CONSOLE_PORT:-9001}:9001"
@@ -163,6 +206,7 @@ services:
       - data-2
       - data-3
       - auth-svc
+      - otel-collector
     restart: unless-stopped
 
   # PostgreSQL Database for Auth Service
@@ -197,6 +241,9 @@ services:
     image: castor-auth-svc:latest
     container_name: castor-auth-svc
     environment:
+      - APP_ENV=${APP_ENV:-dev}
+      - TRACE_OTLP_ENABLED=${TRACE_OTLP_ENABLED:-true}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
       - AUTH_HTTP_ADDR=${AUTH_HTTP_ADDR:-:9095}
       - AUTH_READ_TIMEOUT=${AUTH_READ_TIMEOUT:-10s}
       - AUTH_WRITE_TIMEOUT=${AUTH_WRITE_TIMEOUT:-10s}
@@ -218,6 +265,26 @@ services:
     depends_on:
       auth-db:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
+    networks:
+      - castor-net
+    restart: unless-stopped
+
+  # OpenTelemetry Collector (Forwarding to Grafana Cloud / local)
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    container_name: castor-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    environment:
+      - GRAFANA_CLOUD_OTLP_ENDPOINT=${GRAFANA_CLOUD_OTLP_ENDPOINT:-https://otlp-gateway-prod-us-east-0.grafana.net/otlp}
+      - GRAFANA_CLOUD_INSTANCE_ID=${GRAFANA_CLOUD_INSTANCE_ID:-}
+      - GRAFANA_CLOUD_API_KEY=${GRAFANA_CLOUD_API_KEY:-}
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "${OTEL_COLLECTOR_GRPC_PORT:-4317}:4317" # OTLP gRPC receiver
+      - "${OTEL_COLLECTOR_HTTP_PORT:-4318}:4318" # OTLP HTTP receiver
     networks:
       - castor-net
     restart: unless-stopped

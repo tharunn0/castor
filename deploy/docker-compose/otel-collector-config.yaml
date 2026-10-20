@@ -6,18 +6,26 @@ receivers:
       http:
         endpoint: 0.0.0.0:4318
 
-  # Scrape Prometheus metrics directly from auth-svc /metrics endpoint
+  # Scrape Prometheus metrics directly from services
   prometheus:
     config:
       scrape_configs:
         - job_name: "auth-svc"
-          scrape_interval: 15s
+          scrape_interval: 10s
           static_configs:
             - targets: ["auth-svc:9095"]
         - job_name: "gateway-svc"
-          scrape_interval: 15s
+          scrape_interval: 10s
           static_configs:
             - targets: ["gateway:9001"]
+        - job_name: "data-svc"
+          scrape_interval: 10s
+          static_configs:
+            - targets: ["data-1:9104", "data-2:9104", "data-3:9104"]
+        - job_name: "metadata-svc"
+          scrape_interval: 10s
+          static_configs:
+            - targets: ["metadata-1:9096", "metadata-2:9096", "metadata-3:9096"]
 
 processors:
   batch:

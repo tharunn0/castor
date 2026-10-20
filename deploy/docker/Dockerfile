@@ -40,7 +40,7 @@ COPY --from=build-metadata --chown=65532:65532 /data /data
 COPY --from=build-metadata /bin/metadata-svc /bin/metadata-svc
 USER nonroot:nonroot
 VOLUME ["/data"]
-EXPOSE 9090 9091
+EXPOSE 9090 9091 9096
 ENTRYPOINT ["/bin/metadata-svc"]
 
 # Final image: data-svc
@@ -52,7 +52,7 @@ COPY --from=build-data --chown=65532:65532 /data /data
 COPY --from=build-data /bin/data-svc /bin/data-svc
 USER nonroot:nonroot
 VOLUME ["/data"]
-EXPOSE 9101
+EXPOSE 9101 9104
 ENTRYPOINT ["/bin/data-svc"]
 
 # Build gateway-svc binary
