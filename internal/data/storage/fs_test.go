@@ -224,3 +224,50 @@ func TestWriteChunk_ChecksumMismatch(t *testing.T) {
 		t.Errorf("expected error count 1, got %f", errorCount)
 	}
 }
+
+func TestChunkExists(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := New(tmpDir, MaxChunkSize)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	const nonExistentHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	if store.ChunkExists(nonExistentHash) {
+		t.Fatal("expected ChunkExists = false for non-existent hash")
+	}
+
+	invalidHashes := []string{
+		"",
+		"1234",
+		"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+		"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
+		"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8555",
+	}
+	for _, hash := range invalidHashes {
+		if store.ChunkExists(hash) {
+			t.Errorf("expected ChunkExists = false for invalid hash %q", hash)
+		}
+	}
+
+	data, expectedHash, err := randomChunk(MaxChunkSize)
+	if err != nil {
+		t.Fatalf("randomChunk() failed: %v", err)
+	}
+
+	if _, err := store.WriteChunk(context.Background(), data, expectedHash); err != nil {
+		t.Fatalf("WriteChunk() failed: %v", err)
+	}
+
+	if !store.ChunkExists(expectedHash) {
+		t.Fatal("expected ChunkExists = true after chunk is written")
+	}
+
+	if _, err := store.DeleteChunk(expectedHash); err != nil {
+		t.Fatalf("DeleteChunk() failed: %v", err)
+	}
+
+	if store.ChunkExists(expectedHash) {
+		t.Fatal("expected ChunkExists = false after chunk is deleted")
+	}
+}
