@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -430,6 +431,90 @@ func TestServer_NodeDiscoveryOperations(t *testing.T) {
 	}
 	if len(nodesRes.GetNodes()) != 2 {
 		t.Fatalf("expected 2 active nodes, got %d", len(nodesRes.GetNodes()))
+	}
+}
+
+type mockFollowerApplier struct {
+	leaderAddr string
+}
+
+func (m *mockFollowerApplier) Apply(_ *consensus.Command, _ time.Duration) (any, error) {
+	return nil, &consensus.NotLeaderError{LeaderAddr: m.leaderAddr}
+}
+
+func (m *mockFollowerApplier) IsLeader() bool {
+	return false
+}
+
+func (m *mockFollowerApplier) LeaderAddr() string {
+	return m.leaderAddr
+}
+
+func TestServer_RegistryLeaderEnforcement(t *testing.T) {
+	tmpDir := t.TempDir()
+	s, err := store.Open(filepath.Join(tmpDir, "badger"), true)
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer s.Close()
+
+	follower := &mockFollowerApplier{leaderAddr: "10.0.0.2:9093"}
+	srv := New(s, follower, WithLogger(newTestLogger()))
+
+	lis := bufconn.Listen(1024 * 1024)
+	defer lis.Close()
+	grpcServer := grpc.NewServer()
+	defer grpcServer.Stop()
+	castorv1.RegisterMetadataServiceServer(grpcServer, srv)
+
+	go func() {
+		_ = grpcServer.Serve(lis)
+	}()
+
+	conn, err := grpc.NewClient("passthrough://bufnet",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return lis.Dial()
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("failed to dial bufnet: %v", err)
+	}
+	defer conn.Close()
+	client := castorv1.NewMetadataServiceClient(conn)
+	ctx := context.Background()
+
+	// 1. RegisterNode on non-leader must fail with Unavailable and leader hint
+	_, err = client.RegisterNode(ctx, &castorv1.RegisterNodeRequest{
+		NodeId:      "data-node-1",
+		GrpcAddress: "10.0.0.1:9101",
+	})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("expected Unavailable on RegisterNode from follower, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "leader is 10.0.0.2:9093") {
+		t.Fatalf("expected leader address in error, got: %v", err)
+	}
+
+	// 2. Heartbeat on non-leader must fail with Unavailable and leader hint
+	_, err = client.Heartbeat(ctx, &castorv1.HeartbeatRequest{
+		NodeId:      "data-node-1",
+		GrpcAddress: "10.0.0.1:9101",
+	})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("expected Unavailable on Heartbeat from follower, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "leader is 10.0.0.2:9093") {
+		t.Fatalf("expected leader address in error, got: %v", err)
+	}
+
+	// 3. GetActiveNodes on non-leader must fail with Unavailable and leader hint
+	_, err = client.GetActiveNodes(ctx, &castorv1.GetActiveNodesRequest{})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("expected Unavailable on GetActiveNodes from follower, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "leader is 10.0.0.2:9093") {
+		t.Fatalf("expected leader address in error, got: %v", err)
 	}
 }
 
