@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"net"
 	"testing"
@@ -523,5 +524,100 @@ func TestServer_TelemetryAndTracing(t *testing.T) {
 	writesSuccess := testutil.ToFloat64(metrics.ChunkWritesTotal.WithLabelValues("success"))
 	if writesSuccess != 1 {
 		t.Errorf("expected writesSuccess 1, got %f", writesSuccess)
+	}
+}
+
+func TestGrpcChunkReader(t *testing.T) {
+	client, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	payload := make([]byte, 128*1024)
+	_, _ = rand.Read(payload)
+	expectedHash := hashBytes(payload)
+
+	stream, err := client.PutChunk(context.Background())
+	if err != nil {
+		t.Fatalf("PutChunk failed: %v", err)
+	}
+	if err := stream.Send(&pb.PutChunkRequest{
+		Data: &pb.PutChunkRequest_Metadata{
+			Metadata: &pb.PutChunkMetadata{
+				ChunkHash: expectedHash,
+				ChunkSize: int64(len(payload)),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("send metadata failed: %v", err)
+	}
+	if err := stream.Send(&pb.PutChunkRequest{
+		Data: &pb.PutChunkRequest_ChunkBytes{
+			ChunkBytes: payload,
+		},
+	}); err != nil {
+		t.Fatalf("send chunk bytes failed: %v", err)
+	}
+	if _, err := stream.CloseAndRecv(); err != nil {
+		t.Fatalf("CloseAndRecv failed: %v", err)
+	}
+
+	getStream, err := client.GetChunk(context.Background(), &pb.GetChunkRequest{
+		ChunkHash: expectedHash,
+	})
+	if err != nil {
+		t.Fatalf("GetChunk failed: %v", err)
+	}
+
+	reader := &grpcChunkReader{stream: getStream}
+
+	zeroBuf := make([]byte, 0)
+	n, err := reader.Read(zeroBuf)
+	if n != 0 || err != nil {
+		t.Fatalf("expected Read(empty) = (0, nil), got (%d, %v)", n, err)
+	}
+
+	var readBytes []byte
+	buf := make([]byte, 1024)
+	for {
+		nr, rerr := reader.Read(buf)
+		if nr > 0 {
+			readBytes = append(readBytes, buf[:nr]...)
+		}
+		if errors.Is(rerr, io.EOF) {
+			break
+		}
+		if rerr != nil {
+			t.Fatalf("reader.Read failed: %v", rerr)
+		}
+	}
+
+	if len(readBytes) != len(payload) {
+		t.Fatalf("read length mismatch: got %d, want %d", len(readBytes), len(payload))
+	}
+	if hashBytes(readBytes) != expectedHash {
+		t.Fatalf("read hash mismatch: got %q, want %q", hashBytes(readBytes), expectedHash)
+	}
+}
+
+func TestWithPeerDialer(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := storage.New(tmpDir, 4<<20)
+	if err != nil {
+		t.Fatalf("setup storage: %v", err)
+	}
+
+	called := false
+	customDialer := func(ctx context.Context, target string) (pb.DataServiceClient, io.Closer, error) {
+		called = true
+		return nil, nil, nil
+	}
+
+	srv := New(store, config.NodeConfig{NodeId: "test-node"}, WithPeerDialer(customDialer))
+	if srv.peerDialer == nil {
+		t.Fatal("expected peerDialer to be set")
+	}
+
+	_, _, _ = srv.peerDialer(context.Background(), "mock:1234")
+	if !called {
+		t.Fatal("expected custom peer dialer to be invoked")
 	}
 }

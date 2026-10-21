@@ -11,19 +11,24 @@ import (
 	"github.com/tharunn0/castor/internal/data/config"
 	"github.com/tharunn0/castor/internal/data/storage"
 	"github.com/tharunn0/castor/internal/data/telemetry"
+	telpkg "github.com/tharunn0/castor/internal/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
 
+type PeerDialer func(ctx context.Context, target string) (pb.DataServiceClient, io.Closer, error)
+
 type Server struct {
 	pb.UnimplementedDataServiceServer
-	store   *storage.Storage
-	cfg     config.NodeConfig
-	logger  *slog.Logger
-	metrics *telemetry.DataMetrics
+	store      *storage.Storage
+	cfg        config.NodeConfig
+	logger     *slog.Logger
+	metrics    *telemetry.DataMetrics
+	peerDialer PeerDialer
 }
 
 type Option func(*Server)
@@ -40,17 +45,39 @@ func WithMetrics(metrics *telemetry.DataMetrics) Option {
 	}
 }
 
+func WithPeerDialer(dialer PeerDialer) Option {
+	return func(s *Server) {
+		s.peerDialer = dialer
+	}
+}
+
+func defaultPeerDialer(_ context.Context, target string) (pb.DataServiceClient, io.Closer, error) {
+	conn, err := grpc.NewClient(
+		target,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		telpkg.ClientDialOption(),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	return pb.NewDataServiceClient(conn), conn, nil
+}
+
 func New(s *storage.Storage, cfg config.NodeConfig, opts ...Option) *Server {
 	srv := &Server{
-		store:  s,
-		cfg:    cfg,
-		logger: slog.Default(),
+		store:      s,
+		cfg:        cfg,
+		logger:     slog.Default(),
+		peerDialer: defaultPeerDialer,
 	}
 	for _, opt := range opts {
 		opt(srv)
 	}
 	if srv.logger == nil {
 		srv.logger = slog.Default()
+	}
+	if srv.peerDialer == nil {
+		srv.peerDialer = defaultPeerDialer
 	}
 	return srv
 }
@@ -203,4 +230,26 @@ func (s *Server) HealthCheck(ctx context.Context, req *pb.HealthCheckRequest) (*
 		TotalBytes: int64(stats.TotalBytes),
 		FreeBytes:  int64(stats.FreeBytes),
 	}, nil
+}
+
+type grpcChunkReader struct {
+	stream grpc.ServerStreamingClient[pb.GetChunkResponse]
+	buf    []byte
+}
+
+func (r *grpcChunkReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	for len(r.buf) == 0 {
+		resp, err := r.stream.Recv()
+		if err != nil {
+			return 0, err
+		}
+		r.buf = resp.GetChunkBytes()
+	}
+
+	n := copy(p, r.buf)
+	r.buf = r.buf[n:]
+	return n, nil
 }
