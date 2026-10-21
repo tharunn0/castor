@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log/slog"
@@ -11,19 +12,24 @@ import (
 	"github.com/tharunn0/castor/internal/data/config"
 	"github.com/tharunn0/castor/internal/data/storage"
 	"github.com/tharunn0/castor/internal/data/telemetry"
+	telpkg "github.com/tharunn0/castor/internal/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
 
+type PeerDialer func(ctx context.Context, target string) (pb.DataServiceClient, io.Closer, error)
+
 type Server struct {
 	pb.UnimplementedDataServiceServer
-	store   *storage.Storage
-	cfg     config.NodeConfig
-	logger  *slog.Logger
-	metrics *telemetry.DataMetrics
+	store      *storage.Storage
+	cfg        config.NodeConfig
+	logger     *slog.Logger
+	metrics    *telemetry.DataMetrics
+	peerDialer PeerDialer
 }
 
 type Option func(*Server)
@@ -40,17 +46,39 @@ func WithMetrics(metrics *telemetry.DataMetrics) Option {
 	}
 }
 
+func WithPeerDialer(dialer PeerDialer) Option {
+	return func(s *Server) {
+		s.peerDialer = dialer
+	}
+}
+
+func defaultPeerDialer(_ context.Context, target string) (pb.DataServiceClient, io.Closer, error) {
+	conn, err := grpc.NewClient(
+		target,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		telpkg.ClientDialOption(),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	return pb.NewDataServiceClient(conn), conn, nil
+}
+
 func New(s *storage.Storage, cfg config.NodeConfig, opts ...Option) *Server {
 	srv := &Server{
-		store:  s,
-		cfg:    cfg,
-		logger: slog.Default(),
+		store:      s,
+		cfg:        cfg,
+		logger:     slog.Default(),
+		peerDialer: defaultPeerDialer,
 	}
 	for _, opt := range opts {
 		opt(srv)
 	}
 	if srv.logger == nil {
 		srv.logger = slog.Default()
+	}
+	if srv.peerDialer == nil {
+		srv.peerDialer = defaultPeerDialer
 	}
 	return srv
 }
@@ -179,9 +207,71 @@ func (s *Server) ReplicateChunk(ctx context.Context, req *pb.ReplicateChunkReque
 		)
 	}
 
+	chunkHash := req.GetChunkHash()
+	if len(chunkHash) != 64 {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid chunk hash: must be 64 hex characters")
+	}
+	if _, err := hex.DecodeString(chunkHash); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid chunk hash: %v", err)
+	}
+
+	sourceAddr := req.GetSourceNodeAddress()
+	if sourceAddr == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "source node address is required")
+	}
+
+	if s.store.ChunkExists(chunkHash) {
+		return &pb.ReplicateChunkResponse{
+			Success:         true,
+			BytesReplicated: 0,
+		}, nil
+	}
+
+	peerClient, closer, err := s.peerDialer(ctx, sourceAddr)
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "failed to dial peer %s: %v", sourceAddr, err)
+	}
+	if closer != nil {
+		defer func() {
+			if cerr := closer.Close(); cerr != nil {
+				s.logger.Warn("failed to close peer connection", "error", cerr, "peer", sourceAddr)
+			}
+		}()
+	}
+
+	stream, err := peerClient.GetChunk(ctx, &pb.GetChunkRequest{
+		ChunkHash: chunkHash,
+	})
+	if err != nil {
+		st, _ := status.FromError(err)
+		return nil, status.Errorf(st.Code(), "failed to get chunk from peer: %v", st.Message())
+	}
+
+	reader := &grpcChunkReader{stream: stream}
+	res, err := s.store.WriteChunk(ctx, reader, chunkHash)
+	if err != nil {
+		if reader.err != nil {
+			st, _ := status.FromError(reader.err)
+			return nil, status.Errorf(st.Code(), "failed to receive chunk from peer: %v", st.Message())
+		}
+		if errors.Is(err, storage.ErrHashMismatch) {
+			return nil, status.Errorf(codes.DataLoss, "chunk checksum mismatch: expected %s", chunkHash)
+		}
+		if errors.Is(err, storage.ErrChunkSizeTooLarge) {
+			return nil, status.Errorf(codes.ResourceExhausted, "replicated chunk exceeds max chunk size")
+		}
+		if errors.Is(err, context.Canceled) {
+			return nil, status.Errorf(codes.Canceled, "replication canceled")
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, status.Errorf(codes.DeadlineExceeded, "replication deadline exceeded")
+		}
+		return nil, status.Errorf(codes.Internal, "failed to store replicated chunk: %v", err)
+	}
+
 	return &pb.ReplicateChunkResponse{
 		Success:         true,
-		BytesReplicated: 4 * 1024 * 1024,
+		BytesReplicated: int64(res.Size),
 	}, nil
 }
 
@@ -203,4 +293,30 @@ func (s *Server) HealthCheck(ctx context.Context, req *pb.HealthCheckRequest) (*
 		TotalBytes: int64(stats.TotalBytes),
 		FreeBytes:  int64(stats.FreeBytes),
 	}, nil
+}
+
+type grpcChunkReader struct {
+	stream grpc.ServerStreamingClient[pb.GetChunkResponse]
+	buf    []byte
+	err    error
+}
+
+func (r *grpcChunkReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	for len(r.buf) == 0 {
+		resp, err := r.stream.Recv()
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				r.err = err
+			}
+			return 0, err
+		}
+		r.buf = resp.GetChunkBytes()
+	}
+
+	n := copy(p, r.buf)
+	r.buf = r.buf[n:]
+	return n, nil
 }

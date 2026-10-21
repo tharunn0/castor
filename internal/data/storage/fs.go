@@ -213,6 +213,19 @@ func (s *Storage) ReadChunk(hash string) (io.ReadCloser, error) {
 	}, nil
 }
 
+func (s *Storage) ChunkExists(hash string) bool {
+	if len(hash) != 64 {
+		return false
+	}
+	if _, err := hex.DecodeString(hash); err != nil {
+		return false
+	}
+
+	targetPath := filepath.Join(s.chunkPath, hash[:2], hash)
+	info, err := os.Stat(targetPath)
+	return err == nil && !info.IsDir()
+}
+
 func (s *Storage) DeleteChunk(hash string) (bool, error) {
 	if len(hash) != 64 {
 		return false, ErrInvalidHash

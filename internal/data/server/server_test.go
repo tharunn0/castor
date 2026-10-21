@@ -6,6 +6,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"testing"
@@ -523,5 +525,409 @@ func TestServer_TelemetryAndTracing(t *testing.T) {
 	writesSuccess := testutil.ToFloat64(metrics.ChunkWritesTotal.WithLabelValues("success"))
 	if writesSuccess != 1 {
 		t.Errorf("expected writesSuccess 1, got %f", writesSuccess)
+	}
+}
+
+func TestGrpcChunkReader(t *testing.T) {
+	client, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	payload := make([]byte, 128*1024)
+	_, _ = rand.Read(payload)
+	expectedHash := hashBytes(payload)
+
+	stream, err := client.PutChunk(context.Background())
+	if err != nil {
+		t.Fatalf("PutChunk failed: %v", err)
+	}
+	if err := stream.Send(&pb.PutChunkRequest{
+		Data: &pb.PutChunkRequest_Metadata{
+			Metadata: &pb.PutChunkMetadata{
+				ChunkHash: expectedHash,
+				ChunkSize: int64(len(payload)),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("send metadata failed: %v", err)
+	}
+	if err := stream.Send(&pb.PutChunkRequest{
+		Data: &pb.PutChunkRequest_ChunkBytes{
+			ChunkBytes: payload,
+		},
+	}); err != nil {
+		t.Fatalf("send chunk bytes failed: %v", err)
+	}
+	if _, err := stream.CloseAndRecv(); err != nil {
+		t.Fatalf("CloseAndRecv failed: %v", err)
+	}
+
+	getStream, err := client.GetChunk(context.Background(), &pb.GetChunkRequest{
+		ChunkHash: expectedHash,
+	})
+	if err != nil {
+		t.Fatalf("GetChunk failed: %v", err)
+	}
+
+	reader := &grpcChunkReader{stream: getStream}
+
+	zeroBuf := make([]byte, 0)
+	n, err := reader.Read(zeroBuf)
+	if n != 0 || err != nil {
+		t.Fatalf("expected Read(empty) = (0, nil), got (%d, %v)", n, err)
+	}
+
+	var readBytes []byte
+	buf := make([]byte, 1024)
+	for {
+		nr, rerr := reader.Read(buf)
+		if nr > 0 {
+			readBytes = append(readBytes, buf[:nr]...)
+		}
+		if errors.Is(rerr, io.EOF) {
+			break
+		}
+		if rerr != nil {
+			t.Fatalf("reader.Read failed: %v", rerr)
+		}
+	}
+
+	if len(readBytes) != len(payload) {
+		t.Fatalf("read length mismatch: got %d, want %d", len(readBytes), len(payload))
+	}
+	if hashBytes(readBytes) != expectedHash {
+		t.Fatalf("read hash mismatch: got %q, want %q", hashBytes(readBytes), expectedHash)
+	}
+}
+
+func TestWithPeerDialer(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := storage.New(tmpDir, 4<<20)
+	if err != nil {
+		t.Fatalf("setup storage: %v", err)
+	}
+
+	called := false
+	customDialer := func(ctx context.Context, target string) (pb.DataServiceClient, io.Closer, error) {
+		called = true
+		return nil, nil, nil
+	}
+
+	srv := New(store, config.NodeConfig{NodeId: "test-node"}, WithPeerDialer(customDialer))
+	if srv.peerDialer == nil {
+		t.Fatal("expected peerDialer to be set")
+	}
+
+	_, _, _ = srv.peerDialer(context.Background(), "mock:1234")
+	if !called {
+		t.Fatal("expected custom peer dialer to be invoked")
+	}
+}
+
+type testNode struct {
+	client pb.DataServiceClient
+	server *Server
+	store  *storage.Storage
+	lis    *bufconn.Listener
+}
+
+func setupNamedNode(t *testing.T, nodeID string, opts ...Option) (*testNode, func()) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	store, err := storage.New(tmpDir, 4<<20)
+	if err != nil {
+		t.Fatalf("setup storage: %v", err)
+	}
+
+	lis := bufconn.Listen(1024 * 1024)
+	srv := grpc.NewServer()
+	dataSrv := New(store, config.NodeConfig{NodeId: nodeID}, opts...)
+	pb.RegisterDataServiceServer(srv, dataSrv)
+
+	go func() {
+		_ = srv.Serve(lis)
+	}()
+
+	conn, err := grpc.NewClient(
+		"passthrough://bufnet-"+nodeID,
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return lis.Dial()
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("dial bufnet: %v", err)
+	}
+
+	cleanup := func() {
+		_ = conn.Close()
+		srv.Stop()
+		_ = lis.Close()
+	}
+
+	return &testNode{
+		client: pb.NewDataServiceClient(conn),
+		server: dataSrv,
+		store:  store,
+		lis:    lis,
+	}, cleanup
+}
+
+func writeFullChunk(t *testing.T, client pb.DataServiceClient, payload []byte, hash string) {
+	t.Helper()
+	stream, err := client.PutChunk(context.Background())
+	if err != nil {
+		t.Fatalf("PutChunk failed: %v", err)
+	}
+	if err := stream.Send(&pb.PutChunkRequest{
+		Data: &pb.PutChunkRequest_Metadata{
+			Metadata: &pb.PutChunkMetadata{
+				ChunkHash: hash,
+				ChunkSize: int64(len(payload)),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("send metadata failed: %v", err)
+	}
+
+	frameSize := 64 * 1024
+	numFrames := (len(payload) + frameSize - 1) / frameSize
+	for i := range numFrames {
+		start := i * frameSize
+		end := min(len(payload), start+frameSize)
+		if err := stream.Send(&pb.PutChunkRequest{
+			Data: &pb.PutChunkRequest_ChunkBytes{
+				ChunkBytes: payload[start:end],
+			},
+		}); err != nil {
+			t.Fatalf("send chunk frame failed: %v", err)
+		}
+	}
+
+	if _, err := stream.CloseAndRecv(); err != nil {
+		t.Fatalf("CloseAndRecv failed: %v", err)
+	}
+}
+
+func TestReplicateChunk_SuccessAndIdempotency(t *testing.T) {
+	nodeA, cleanupA := setupNamedNode(t, "node-a")
+	defer cleanupA()
+
+	peerDialer := func(ctx context.Context, target string) (pb.DataServiceClient, io.Closer, error) {
+		if target == "node-a" {
+			conn, err := grpc.NewClient(
+				"passthrough://bufnet-node-a",
+				grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+					return nodeA.lis.Dial()
+				}),
+				grpc.WithTransportCredentials(insecure.NewCredentials()),
+			)
+			if err != nil {
+				return nil, nil, err
+			}
+			return pb.NewDataServiceClient(conn), conn, nil
+		}
+		return nil, nil, fmt.Errorf("unknown peer %s", target)
+	}
+
+	nodeB, cleanupB := setupNamedNode(t, "node-b", WithPeerDialer(peerDialer))
+	defer cleanupB()
+
+	// 4MiB chunk payload adhering to chunk size invariant
+	payload := make([]byte, 4<<20)
+	_, _ = rand.Read(payload)
+	expectedHash := hashBytes(payload)
+
+	writeFullChunk(t, nodeA.client, payload, expectedHash)
+
+	if nodeB.store.ChunkExists(expectedHash) {
+		t.Fatal("expected target node not to have chunk before replication")
+	}
+
+	repResp, err := nodeB.client.ReplicateChunk(context.Background(), &pb.ReplicateChunkRequest{
+		ChunkHash:         expectedHash,
+		SourceNodeAddress: "node-a",
+	})
+	if err != nil {
+		t.Fatalf("ReplicateChunk failed: %v", err)
+	}
+	if !repResp.GetSuccess() {
+		t.Fatal("expected ReplicateChunk success = true")
+	}
+	if repResp.GetBytesReplicated() != int64(len(payload)) {
+		t.Fatalf("expected BytesReplicated %d, got %d", len(payload), repResp.GetBytesReplicated())
+	}
+	if !nodeB.store.ChunkExists(expectedHash) {
+		t.Fatal("expected target node to have chunk after replication")
+	}
+
+	rc, err := nodeB.store.ReadChunk(expectedHash)
+	if err != nil {
+		t.Fatalf("ReadChunk on target node failed: %v", err)
+	}
+	readBytes, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil {
+		t.Fatalf("ReadAll on replicated chunk failed: %v", err)
+	}
+	if hashBytes(readBytes) != expectedHash {
+		t.Fatalf("replicated chunk content hash mismatch: got %q, want %q", hashBytes(readBytes), expectedHash)
+	}
+
+	// Idempotency: verify repeating replication returns success with 0 bytes replicated
+	idemResp, err := nodeB.client.ReplicateChunk(context.Background(), &pb.ReplicateChunkRequest{
+		ChunkHash:         expectedHash,
+		SourceNodeAddress: "node-a",
+	})
+	if err != nil {
+		t.Fatalf("second ReplicateChunk failed: %v", err)
+	}
+	if !idemResp.GetSuccess() {
+		t.Fatal("expected idempotent ReplicateChunk success = true")
+	}
+	if idemResp.GetBytesReplicated() != 0 {
+		t.Fatalf("expected BytesReplicated = 0 on duplicate, got %d", idemResp.GetBytesReplicated())
+	}
+}
+
+func TestReplicateChunk_SourceNotFound(t *testing.T) {
+	nodeA, cleanupA := setupNamedNode(t, "node-a")
+	defer cleanupA()
+
+	peerDialer := func(ctx context.Context, target string) (pb.DataServiceClient, io.Closer, error) {
+		if target == "node-a" {
+			conn, err := grpc.NewClient(
+				"passthrough://bufnet-node-a",
+				grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+					return nodeA.lis.Dial()
+				}),
+				grpc.WithTransportCredentials(insecure.NewCredentials()),
+			)
+			if err != nil {
+				return nil, nil, err
+			}
+			return pb.NewDataServiceClient(conn), conn, nil
+		}
+		return nil, nil, fmt.Errorf("unknown peer %s", target)
+	}
+
+	nodeB, cleanupB := setupNamedNode(t, "node-b", WithPeerDialer(peerDialer))
+	defer cleanupB()
+
+	missingHash := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	_, err := nodeB.client.ReplicateChunk(context.Background(), &pb.ReplicateChunkRequest{
+		ChunkHash:         missingHash,
+		SourceNodeAddress: "node-a",
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("expected codes.NotFound, got: %v", err)
+	}
+	if nodeB.store.ChunkExists(missingHash) {
+		t.Fatal("expected missing chunk not to be stored on target")
+	}
+}
+
+type corruptPeerServer struct {
+	pb.UnimplementedDataServiceServer
+	corruptBytes []byte
+}
+
+func (c *corruptPeerServer) GetChunk(req *pb.GetChunkRequest, stream grpc.ServerStreamingServer[pb.GetChunkResponse]) error {
+	return stream.Send(&pb.GetChunkResponse{ChunkBytes: c.corruptBytes})
+}
+
+func TestReplicateChunk_ChecksumMismatch(t *testing.T) {
+	lis := bufconn.Listen(1024 * 1024)
+	srv := grpc.NewServer()
+	corruptPayload := make([]byte, 64*1024)
+	for i := range corruptPayload {
+		corruptPayload[i] = 0x55
+	}
+	pb.RegisterDataServiceServer(srv, &corruptPeerServer{corruptBytes: corruptPayload})
+	go func() {
+		_ = srv.Serve(lis)
+	}()
+	defer func() {
+		srv.Stop()
+		_ = lis.Close()
+	}()
+
+	peerDialer := func(ctx context.Context, target string) (pb.DataServiceClient, io.Closer, error) {
+		conn, err := grpc.NewClient(
+			"passthrough://bufnet-corrupt",
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return lis.Dial()
+			}),
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+		return pb.NewDataServiceClient(conn), conn, nil
+	}
+
+	nodeB, cleanupB := setupNamedNode(t, "node-b", WithPeerDialer(peerDialer))
+	defer cleanupB()
+
+	// Hash of all zeros, completely different from 0x55
+	mismatchedHash := hashBytes(make([]byte, 64*1024))
+	_, err := nodeB.client.ReplicateChunk(context.Background(), &pb.ReplicateChunkRequest{
+		ChunkHash:         mismatchedHash,
+		SourceNodeAddress: "corrupt-peer",
+	})
+	if status.Code(err) != codes.DataLoss {
+		t.Fatalf("expected codes.DataLoss on checksum mismatch, got: %v", err)
+	}
+	if nodeB.store.ChunkExists(mismatchedHash) {
+		t.Fatal("corrupt chunk must not be stored on disk")
+	}
+}
+
+func TestReplicateChunk_InvalidArguments(t *testing.T) {
+	client, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	invalidHashes := []string{
+		"",
+		"1234",
+		"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+		"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
+		"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8555",
+	}
+
+	for _, hash := range invalidHashes {
+		_, err := client.ReplicateChunk(context.Background(), &pb.ReplicateChunkRequest{
+			ChunkHash:         hash,
+			SourceNodeAddress: "some-addr",
+		})
+		if status.Code(err) != codes.InvalidArgument {
+			t.Errorf("expected InvalidArgument for hash %q, got: %v", hash, err)
+		}
+	}
+
+	validHash := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	_, err := client.ReplicateChunk(context.Background(), &pb.ReplicateChunkRequest{
+		ChunkHash:         validHash,
+		SourceNodeAddress: "",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Errorf("expected InvalidArgument for empty source address, got: %v", err)
+	}
+}
+
+func TestReplicateChunk_DialFailure(t *testing.T) {
+	failingDialer := func(ctx context.Context, target string) (pb.DataServiceClient, io.Closer, error) {
+		return nil, nil, fmt.Errorf("connection refused")
+	}
+
+	node, cleanup := setupNamedNode(t, "node-fail", WithPeerDialer(failingDialer))
+	defer cleanup()
+
+	validHash := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	_, err := node.client.ReplicateChunk(context.Background(), &pb.ReplicateChunkRequest{
+		ChunkHash:         validHash,
+		SourceNodeAddress: "down-peer:9100",
+	})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("expected Unavailable on dial failure, got: %v", err)
 	}
 }
