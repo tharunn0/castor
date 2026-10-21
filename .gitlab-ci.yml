@@ -1,0 +1,20 @@
+
+stages:
+  - test
+  - lint
+
+variables:
+  GOTOOLCHAIN: auto
+
+test:
+  stage: test
+  image: golang:1.26.5
+  script:
+    - go test -v --count=1 -race ./internal/...
+    - go test -v --count=1 ./tests/integration/...
+
+lint:
+  stage: lint
+  image: golangci/golangci-lint:v2.13
+  script:
+    - golangci-lint run
