@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log/slog"
@@ -206,9 +207,71 @@ func (s *Server) ReplicateChunk(ctx context.Context, req *pb.ReplicateChunkReque
 		)
 	}
 
+	chunkHash := req.GetChunkHash()
+	if len(chunkHash) != 64 {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid chunk hash: must be 64 hex characters")
+	}
+	if _, err := hex.DecodeString(chunkHash); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid chunk hash: %v", err)
+	}
+
+	sourceAddr := req.GetSourceNodeAddress()
+	if sourceAddr == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "source node address is required")
+	}
+
+	if s.store.ChunkExists(chunkHash) {
+		return &pb.ReplicateChunkResponse{
+			Success:         true,
+			BytesReplicated: 0,
+		}, nil
+	}
+
+	peerClient, closer, err := s.peerDialer(ctx, sourceAddr)
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "failed to dial peer %s: %v", sourceAddr, err)
+	}
+	if closer != nil {
+		defer func() {
+			if cerr := closer.Close(); cerr != nil {
+				s.logger.Warn("failed to close peer connection", "error", cerr, "peer", sourceAddr)
+			}
+		}()
+	}
+
+	stream, err := peerClient.GetChunk(ctx, &pb.GetChunkRequest{
+		ChunkHash: chunkHash,
+	})
+	if err != nil {
+		st, _ := status.FromError(err)
+		return nil, status.Errorf(st.Code(), "failed to get chunk from peer: %v", st.Message())
+	}
+
+	reader := &grpcChunkReader{stream: stream}
+	res, err := s.store.WriteChunk(ctx, reader, chunkHash)
+	if err != nil {
+		if reader.err != nil {
+			st, _ := status.FromError(reader.err)
+			return nil, status.Errorf(st.Code(), "failed to receive chunk from peer: %v", st.Message())
+		}
+		if errors.Is(err, storage.ErrHashMismatch) {
+			return nil, status.Errorf(codes.DataLoss, "chunk checksum mismatch: expected %s", chunkHash)
+		}
+		if errors.Is(err, storage.ErrChunkSizeTooLarge) {
+			return nil, status.Errorf(codes.ResourceExhausted, "replicated chunk exceeds max chunk size")
+		}
+		if errors.Is(err, context.Canceled) {
+			return nil, status.Errorf(codes.Canceled, "replication canceled")
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, status.Errorf(codes.DeadlineExceeded, "replication deadline exceeded")
+		}
+		return nil, status.Errorf(codes.Internal, "failed to store replicated chunk: %v", err)
+	}
+
 	return &pb.ReplicateChunkResponse{
 		Success:         true,
-		BytesReplicated: 4 * 1024 * 1024,
+		BytesReplicated: int64(res.Size),
 	}, nil
 }
 
@@ -235,6 +298,7 @@ func (s *Server) HealthCheck(ctx context.Context, req *pb.HealthCheckRequest) (*
 type grpcChunkReader struct {
 	stream grpc.ServerStreamingClient[pb.GetChunkResponse]
 	buf    []byte
+	err    error
 }
 
 func (r *grpcChunkReader) Read(p []byte) (int, error) {
@@ -244,6 +308,9 @@ func (r *grpcChunkReader) Read(p []byte) (int, error) {
 	for len(r.buf) == 0 {
 		resp, err := r.stream.Recv()
 		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				r.err = err
+			}
 			return 0, err
 		}
 		r.buf = resp.GetChunkBytes()
