@@ -45,6 +45,16 @@ func (e *NotLeaderError) Unwrap() error {
 	return ErrNotLeader
 }
 
+type LeadershipObserver interface {
+	OnLeadershipChange(isLeader bool)
+}
+
+type LeadershipObserverFunc func(isLeader bool)
+
+func (f LeadershipObserverFunc) OnLeadershipChange(isLeader bool) {
+	f(isLeader)
+}
+
 type RaftNode struct {
 	raft          *raft.Raft
 	fsm           *FSM
@@ -55,6 +65,10 @@ type RaftNode struct {
 	stopCh        chan struct{}
 	stopOnce      sync.Once
 	wg            sync.WaitGroup
+
+	obsMu     sync.RWMutex
+	nextObsID uint64
+	observers map[uint64]LeadershipObserver
 
 	cfg     config.Config
 	logger  *slog.Logger
@@ -79,6 +93,18 @@ func WithMetrics(metrics *telemetry.MetadataMetrics) RaftOption {
 func WithLogger(logger *slog.Logger) RaftOption {
 	return func(r *RaftNode) {
 		r.logger = logger
+	}
+}
+
+func WithLeadershipObserver(observer LeadershipObserver) RaftOption {
+	return func(r *RaftNode) {
+		if observer != nil {
+			if r.observers == nil {
+				r.observers = make(map[uint64]LeadershipObserver)
+			}
+			r.nextObsID++
+			r.observers[r.nextObsID] = observer
+		}
 	}
 }
 
@@ -184,6 +210,7 @@ func NewRaftNode(cfg config.Config, fsm *FSM, opts ...RaftOption) (*RaftNode, er
 		tracer:        otel.GetTracerProvider().Tracer("metadata-svc"),
 		metrics:       defaultMetrics,
 		stopCh:        make(chan struct{}),
+		observers:     make(map[uint64]LeadershipObserver),
 	}
 
 	for _, opt := range opts {
@@ -204,9 +231,11 @@ func (r *RaftNode) monitorLeadership() {
 	for {
 		select {
 		case <-r.stopCh:
+			r.notifyObservers(false)
 			return
 		case isLeader, ok := <-leaderCh:
 			if !ok {
+				r.notifyObservers(false)
 				return
 			}
 			if isLeader {
@@ -226,7 +255,46 @@ func (r *RaftNode) monitorLeadership() {
 					"new_leader_addr", r.LeaderAddr(),
 				)
 			}
+			r.notifyObservers(isLeader)
 		}
+	}
+}
+
+func (r *RaftNode) AddLeadershipObserver(observer LeadershipObserver) func() {
+	if observer == nil {
+		return func() {}
+	}
+	r.obsMu.Lock()
+	if r.observers == nil {
+		r.observers = make(map[uint64]LeadershipObserver)
+	}
+	r.nextObsID++
+	id := r.nextObsID
+	r.observers[id] = observer
+	isLeader := r.IsLeader()
+	r.obsMu.Unlock()
+
+	if isLeader {
+		observer.OnLeadershipChange(true)
+	}
+
+	return func() {
+		r.obsMu.Lock()
+		delete(r.observers, id)
+		r.obsMu.Unlock()
+	}
+}
+
+func (r *RaftNode) notifyObservers(isLeader bool) {
+	r.obsMu.RLock()
+	observers := make([]LeadershipObserver, 0, len(r.observers))
+	for _, obs := range r.observers {
+		observers = append(observers, obs)
+	}
+	r.obsMu.RUnlock()
+
+	for _, obs := range observers {
+		obs.OnLeadershipChange(isLeader)
 	}
 }
 

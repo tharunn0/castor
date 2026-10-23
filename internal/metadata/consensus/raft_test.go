@@ -226,3 +226,62 @@ func TestRaftNode_TelemetryAndMetrics(t *testing.T) {
 		t.Errorf("expected IsLeader to be 0 after shutdown, got %v", val)
 	}
 }
+
+func TestRaftNode_LeadershipObserver(t *testing.T) {
+	var initialChanges []bool
+	initialObs := LeadershipObserverFunc(func(isLeader bool) {
+		initialChanges = append(initialChanges, isLeader)
+	})
+
+	node, _, _ := newTestRaftNode(t, "node-obs-1", "127.0.0.1:0", nil,
+		WithLeadershipObserver(initialObs),
+	)
+
+	// Wait up to 2 seconds for bootstrap node to become leader
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if node.IsLeader() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if !node.IsLeader() {
+		t.Fatal("expected node to become leader")
+	}
+
+	// Dynamic observer added after leadership acquired
+	var dynamicChanges []bool
+	dynamicObs := LeadershipObserverFunc(func(isLeader bool) {
+		dynamicChanges = append(dynamicChanges, isLeader)
+	})
+	unsub := node.AddLeadershipObserver(dynamicObs)
+
+	// Since node is already leader, AddLeadershipObserver immediately notifies with true
+	if len(dynamicChanges) == 0 || !dynamicChanges[len(dynamicChanges)-1] {
+		t.Fatalf("expected dynamic observer to receive true immediately, got %v", dynamicChanges)
+	}
+
+	// Test unsubscribe
+	unsub()
+	beforeLen := len(dynamicChanges)
+
+	// Shutdown node - triggers leadership loss notification
+	if err := node.Shutdown(); err != nil {
+		t.Fatalf("shutdown failed: %v", err)
+	}
+
+	// Dynamic observer should not have received shutdown notification due to unsubscribe
+	if len(dynamicChanges) != beforeLen {
+		t.Fatalf("expected unsubscribed observer to receive no more notifications, got %v", dynamicChanges)
+	}
+
+	// Initial observer should have received false on shutdown
+	if len(initialChanges) == 0 || initialChanges[len(initialChanges)-1] {
+		t.Fatalf("expected initial observer to receive false upon shutdown, got %v", initialChanges)
+	}
+
+	// Test nil observer handling
+	unsubNil := node.AddLeadershipObserver(nil)
+	unsubNil()
+}
