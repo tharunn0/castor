@@ -13,6 +13,7 @@ import (
 
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
 	"github.com/tharunn0/castor/internal/data/config"
+	"github.com/tharunn0/castor/internal/data/heartbeat"
 	"github.com/tharunn0/castor/internal/data/server"
 	"github.com/tharunn0/castor/internal/data/storage"
 	datatelemetry "github.com/tharunn0/castor/internal/data/telemetry"
@@ -64,6 +65,9 @@ func main() {
 
 	_ = store.UpdateCapacityMetrics(dataMetrics)
 
+	syncer := heartbeat.NewSyncer(cfg, store, heartbeat.WithLogger(logger))
+	syncer.Start(ctx)
+
 	grpcServer := grpc.NewServer(
 		grpc.StatsHandler(otelgrpc.NewServerHandler(
 			otelgrpc.WithFilter(func(info *stats.RPCTagInfo) bool {
@@ -114,6 +118,7 @@ func main() {
 		logger.Error("data gRPC server error", "error", err)
 	}
 
+	_ = syncer.Stop()
 	grpcServer.GracefulStop()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

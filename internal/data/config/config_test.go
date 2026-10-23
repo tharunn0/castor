@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 func TestLoad_Defaults(t *testing.T) {
@@ -25,6 +26,18 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.DataDir != "data" {
 		t.Errorf("expected default DataDir 'data', got %q", cfg.DataDir)
 	}
+	if cfg.MetadataAddr != "127.0.0.1:9090" {
+		t.Errorf("expected default MetadataAddr '127.0.0.1:9090', got %q", cfg.MetadataAddr)
+	}
+	if len(cfg.MetadataNodes) != 1 || cfg.MetadataNodes[0] != "127.0.0.1:9090" {
+		t.Errorf("expected default MetadataNodes ['127.0.0.1:9090'], got %v", cfg.MetadataNodes)
+	}
+	if cfg.AdvertiseAddr != ":9101" {
+		t.Errorf("expected default AdvertiseAddr ':9101', got %q", cfg.AdvertiseAddr)
+	}
+	if cfg.HeartbeatInterval != 3*time.Second {
+		t.Errorf("expected default HeartbeatInterval 3s, got %v", cfg.HeartbeatInterval)
+	}
 }
 
 func TestLoad_EnvOverrides(t *testing.T) {
@@ -32,6 +45,9 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	t.Setenv("GRPC_ADDR", ":9201")
 	t.Setenv("METRICS_ADDR", ":9204")
 	t.Setenv("DATA_DIR", "/mnt/data")
+	t.Setenv("METADATA_NODES", "meta-1:9090,meta-2:9090,meta-3:9090")
+	t.Setenv("ADVERTISE_ADDR", "10.0.0.99:9201")
+	t.Setenv("HEARTBEAT_INTERVAL", "5s")
 
 	cfg := Load()
 
@@ -46,5 +62,14 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	}
 	if cfg.DataDir != "/mnt/data" {
 		t.Errorf("expected DataDir '/mnt/data', got %q", cfg.DataDir)
+	}
+	if len(cfg.MetadataNodes) != 3 || cfg.MetadataNodes[1] != "meta-2:9090" {
+		t.Errorf("expected 3 metadata nodes, got %v", cfg.MetadataNodes)
+	}
+	if cfg.AdvertiseAddr != "10.0.0.99:9201" {
+		t.Errorf("expected AdvertiseAddr '10.0.0.99:9201', got %q", cfg.AdvertiseAddr)
+	}
+	if cfg.HeartbeatInterval != 5*time.Second {
+		t.Errorf("expected HeartbeatInterval 5s, got %v", cfg.HeartbeatInterval)
 	}
 }
