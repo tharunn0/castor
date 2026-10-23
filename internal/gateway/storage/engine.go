@@ -104,7 +104,7 @@ func New(cfg config.Config, metaClient castorv1.MetadataServiceClient) *StorageE
 		}
 	}
 
-	return &StorageEngine{
+	engine := &StorageEngine{
 		cfg:          cfg,
 		metaClient:   metaClient,
 		placement:    placement,
@@ -115,6 +115,21 @@ func New(cfg config.Config, metaClient castorv1.MetadataServiceClient) *StorageE
 		activeLeader: activeLeader,
 		logger:       slog.Default(),
 	}
+
+	placement.SetActiveNodeProvider(func(ctx context.Context) ([]*castorv1.NodeCapacity, error) {
+		var nodes []*castorv1.NodeCapacity
+		err := engine.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+			resp, err := client.GetActiveNodes(ctx, &castorv1.GetActiveNodesRequest{})
+			if err != nil {
+				return err
+			}
+			nodes = resp.GetNodes()
+			return nil
+		})
+		return nodes, err
+	})
+
+	return engine
 }
 
 func (e *StorageEngine) AddMetadataNode(addr string) {

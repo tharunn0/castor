@@ -153,3 +153,88 @@ func TestPlacementWriteQuorumFailure(t *testing.T) {
 		t.Fatalf("expected ErrQuorumNotMet, got %v", err)
 	}
 }
+
+func TestPlacement_CapacityAwareRanking(t *testing.T) {
+	provider := func(ctx context.Context) ([]*castorv1.NodeCapacity, error) {
+		return []*castorv1.NodeCapacity{
+			{NodeId: "node-low", GrpcAddress: "10.0.0.1:9101", FreeBytes: 10 * (1 << 30), Status: castorv1.NodeStatus_NODE_STATUS_HEALTHY},
+			{NodeId: "node-high", GrpcAddress: "10.0.0.2:9102", FreeBytes: 90 * (1 << 30), Status: castorv1.NodeStatus_NODE_STATUS_HEALTHY},
+			{NodeId: "node-mid", GrpcAddress: "10.0.0.3:9103", FreeBytes: 50 * (1 << 30), Status: castorv1.NodeStatus_NODE_STATUS_HEALTHY},
+		}, nil
+	}
+
+	pm := NewPlacementManager([]string{"static-1", "static-2"}, 2, WithActiveNodeProvider(provider))
+
+	selected, err := pm.SelectNodes(2)
+	if err != nil {
+		t.Fatalf("SelectNodes failed: %v", err)
+	}
+	if len(selected) != 2 {
+		t.Fatalf("expected 2 nodes, got %d", len(selected))
+	}
+
+	// Should select highest capacity nodes first (node-high then node-mid)
+	if selected[0] != "10.0.0.2:9102" || selected[1] != "10.0.0.3:9103" {
+		t.Errorf("expected ranking [10.0.0.2:9102, 10.0.0.3:9103], got %v", selected)
+	}
+}
+
+func TestPlacement_OfflineAndLowCapacityFiltering(t *testing.T) {
+	provider := func(ctx context.Context) ([]*castorv1.NodeCapacity, error) {
+		return []*castorv1.NodeCapacity{
+			{NodeId: "node-offline", GrpcAddress: "10.0.0.1:9101", FreeBytes: 100 * (1 << 30), Status: castorv1.NodeStatus_NODE_STATUS_OFFLINE},
+			{NodeId: "node-full", GrpcAddress: "10.0.0.2:9102", FreeBytes: 1 << 20, Status: castorv1.NodeStatus_NODE_STATUS_HEALTHY}, // 1MB < 4MiB chunk boundary
+			{NodeId: "node-healthy1", GrpcAddress: "10.0.0.3:9103", FreeBytes: 50 * (1 << 30), Status: castorv1.NodeStatus_NODE_STATUS_HEALTHY},
+			{NodeId: "node-healthy2", GrpcAddress: "10.0.0.4:9104", FreeBytes: 30 * (1 << 30), Status: castorv1.NodeStatus_NODE_STATUS_HEALTHY},
+		}, nil
+	}
+
+	pm := NewPlacementManager(nil, 2, WithActiveNodeProvider(provider))
+
+	selected, err := pm.SelectNodes(2)
+	if err != nil {
+		t.Fatalf("SelectNodes failed: %v", err)
+	}
+	if len(selected) != 2 {
+		t.Fatalf("expected 2 nodes, got %d", len(selected))
+	}
+	if selected[0] != "10.0.0.3:9103" || selected[1] != "10.0.0.4:9104" {
+		t.Errorf("expected healthy candidates [10.0.0.3:9103, 10.0.0.4:9104], got %v", selected)
+	}
+}
+
+func TestPlacement_StaticFallback(t *testing.T) {
+	provider := func(ctx context.Context) ([]*castorv1.NodeCapacity, error) {
+		return nil, errors.New("metadata cluster unreachable")
+	}
+
+	staticNodes := []string{"static-node-1:9101", "static-node-2:9102", "static-node-3:9103"}
+	pm := NewPlacementManager(staticNodes, 2, WithActiveNodeProvider(provider))
+
+	selected, err := pm.SelectNodes(2)
+	if err != nil {
+		t.Fatalf("SelectNodes should fall back to static nodes: %v", err)
+	}
+	if len(selected) != 2 {
+		t.Fatalf("expected 2 nodes from static fallback, got %d", len(selected))
+	}
+	if selected[0] != "static-node-1:9101" || selected[1] != "static-node-2:9102" {
+		t.Errorf("expected static nodes, got %v", selected)
+	}
+}
+
+func TestPlacement_QuorumEnforcement(t *testing.T) {
+	// Only 1 healthy node available dynamically and statically; writeQuorum is 2
+	provider := func(ctx context.Context) ([]*castorv1.NodeCapacity, error) {
+		return []*castorv1.NodeCapacity{
+			{NodeId: "lone-node", GrpcAddress: "10.0.0.1:9101", FreeBytes: 10 * (1 << 30), Status: castorv1.NodeStatus_NODE_STATUS_HEALTHY},
+		}, nil
+	}
+
+	pm := NewPlacementManager([]string{"static-lone"}, 2, WithActiveNodeProvider(provider))
+
+	_, err := pm.SelectNodes(2)
+	if !errors.Is(err, ErrQuorumNotMet) {
+		t.Fatalf("expected ErrQuorumNotMet, got %v", err)
+	}
+}
