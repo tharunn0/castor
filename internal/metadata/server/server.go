@@ -27,10 +27,6 @@ type RaftApplier interface {
 	LeaderAddr() string
 }
 
-type consensusContextApplier interface {
-	ApplyContext(ctx context.Context, cmd *consensus.Command, timeout time.Duration) (any, error)
-}
-
 type Server struct {
 	castorv1.UnimplementedMetadataServiceServer
 	store    *store.Store
@@ -101,16 +97,6 @@ func (s *Server) apply(ctx context.Context, cmd *consensus.Command) (any, error)
 	timeout := s.timeout
 	if timeout <= 0 {
 		timeout = 5 * time.Second
-	}
-	if applier, ok := s.raft.(consensusContextApplier); ok {
-		res, err := applier.ApplyContext(ctx, cmd, timeout)
-		if err != nil {
-			return nil, err
-		}
-		if applyErr, ok := res.(error); ok && applyErr != nil {
-			return nil, applyErr
-		}
-		return res, nil
 	}
 	res, err := s.raft.Apply(cmd, timeout)
 	if err != nil {
@@ -589,6 +575,9 @@ func (s *Server) AbortMultipart(ctx context.Context, req *castorv1.AbortMultipar
 }
 
 func (s *Server) RegisterNode(ctx context.Context, req *castorv1.RegisterNodeRequest) (*castorv1.RegisterNodeResponse, error) {
+	if !s.raft.IsLeader() {
+		return nil, toGRPCError(&consensus.NotLeaderError{LeaderAddr: s.raft.LeaderAddr()})
+	}
 	if req.GetNodeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "node_id is required")
 	}
@@ -602,6 +591,9 @@ func (s *Server) RegisterNode(ctx context.Context, req *castorv1.RegisterNodeReq
 }
 
 func (s *Server) Heartbeat(ctx context.Context, req *castorv1.HeartbeatRequest) (*castorv1.HeartbeatResponse, error) {
+	if !s.raft.IsLeader() {
+		return nil, toGRPCError(&consensus.NotLeaderError{LeaderAddr: s.raft.LeaderAddr()})
+	}
 	if req.GetNodeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "node_id is required")
 	}
@@ -616,6 +608,9 @@ func (s *Server) Heartbeat(ctx context.Context, req *castorv1.HeartbeatRequest) 
 }
 
 func (s *Server) GetActiveNodes(ctx context.Context, req *castorv1.GetActiveNodesRequest) (*castorv1.GetActiveNodesResponse, error) {
+	if !s.raft.IsLeader() {
+		return nil, toGRPCError(&consensus.NotLeaderError{LeaderAddr: s.raft.LeaderAddr()})
+	}
 	nodes := s.registry.GetActiveNodes()
 	return &castorv1.GetActiveNodesResponse{Nodes: nodes}, nil
 }
