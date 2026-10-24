@@ -337,8 +337,6 @@ Exposed directly by `metadata-svc` nodes (with the active leader handling state 
 - `GET /admin/raft/status`: Returns JSON detailing current term, active leader address, and peer commit indices.
 - `GET /admin/nodes`: Returns JSON array of storage nodes registered in the dynamic heartbeat registry, their health states (`HEALTHY`, `DEGRADED`, `OFFLINE`), and disk capacities.
 - `POST /admin/gc`: Triggers an immediate garbage collection sweep on the Raft leader. Accepts query parameter `?dry_run=true` to report reclaimable chunks without deleting them.
-- `GET /admin/scrub/status`: Returns JSON with current scrubber state: `{running, progress_ratio, chunks_verified, corruptions_found, last_completed_at, cursor_position}`.
-- `POST /admin/scrub/trigger`: Triggers an immediate scrub sweep on the Raft leader, resetting the cursor. Accepts `?dry_run=true` to report corruption without triggering repair.
 
 ### 4.3. Browser BFF API Endpoints (`gateway-svc :9001`)
 Exposed by `gateway-svc` to power the standalone operator web console (`castor-ui`) and browser operations (with CORS enabled for the console origin):
@@ -531,9 +529,6 @@ service DataService {
 
   // Local node health & disk status
   rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
-
-  // Local integrity verification (no byte streaming to caller)
-  rpc ScrubChunk(ScrubChunkRequest) returns (ScrubChunkResponse);
 }
 ```
 
@@ -594,16 +589,6 @@ message HealthCheckResponse {
   int64 total_bytes = 3;
   int64 free_bytes = 4;
 }
-
-message ScrubChunkRequest {
-  string chunk_hash = 1;  // SHA-256 hex digest to verify
-}
-
-message ScrubChunkResponse {
-  bool ok = 1;              // true if computed hash matches chunk_hash
-  string computed_hash = 2; // actual SHA-256 computed from disk
-  bool chunk_exists = 3;    // false if chunk file not found on this node
-}
 ```
 
 ---
@@ -649,10 +634,4 @@ curl http://localhost:9071/admin/nodes
 
 # Trigger an on-demand quarantine GC sweep (dry run)
 curl -X POST "http://localhost:9071/admin/gc?dry_run=true"
-
-# Check scrubber status and progress
-curl http://localhost:9071/admin/scrub/status
-
-# Trigger an immediate scrub sweep (dry run)
-curl -X POST "http://localhost:9071/admin/scrub/trigger?dry_run=true"
 ```

@@ -290,16 +290,6 @@ flowchart TD
         ServiceStart["data-svc startup"] --> SweepStaging["Sweep /data/staging/ directory"]
         SweepStaging --> DeleteTmp["Delete orphaned *.tmp files from ungraceful crashes"]
     end
-
-    subgraph ScrubOps["6. Background Bit-Rot Scrubber (Leader-Only, 7-Day Cycle)"]
-        ScrubScan["Iterate chunk:* keys in BadgerDB<br/>(Resume from scrub_cursor)"]
-        ScrubScan --> ScrubRate["Token Bucket Rate Limiter<br/>(10 chunks/sec, configurable)"]
-        ScrubRate --> ScrubRPC["Issue ScrubChunk RPC to each holding node<br/>(Local SHA-256 verify, no byte streaming)"]
-        ScrubRPC --> ScrubCheck["{Hash Matches?}"]
-        ScrubCheck -->|Yes| ScrubNext["Update scrub_cursor → next chunk"]
-        ScrubCheck -->|No| ScrubCorrupt["Propose CmdMarkChunkCorrupted via Raft<br/>(Remove corrupt node from ChunkLocationRecord)"]
-        ScrubCorrupt --> ScrubRepair["Trigger TriggerReadRepair<br/>(Replica healer restores R=3)"]
-    end
 ```
 
 ---
@@ -317,4 +307,3 @@ flowchart TD
 | **Garbage Collection Safety** | 24-Hour Quarantine Window | Protects concurrent deduplicating writes from race conditions with chunk deletion. |
 | **Operational Simplicity** | Embedded Leader Workers & Headless BFF | No external orchestrators; headless BFF on `:9001` isolates S3 data path from independent UI deployments. |
 | **Presigned URL Security** | Stateless HMAC-SHA256 Query-String SigV4 | Time-limited, credential-free object access; verified by `versitygw`; zero DB storage. |
-| **Proactive Integrity Verification** | Leader-Only Scrubber Worker + `ScrubChunk` RPC | Detects silent bit-rot before client reads; local node verify (no byte streaming); repair triggered automatically. |

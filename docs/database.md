@@ -55,7 +55,6 @@ CREATE INDEX idx_s3_credentials_user_id ON s3_credentials(user_id);
 | `chunk:<sha256>` | `chunk:7f83b165...` | Content-addressed chunk refcount and nodes |
 | `multipart:<upload_id>` | `multipart:c83b40d2...` | Active multipart session |
 | `multipart_part:<upload_id>:<part_num>` | `multipart_part:c83b40d2...:00001` | 5-digit zero-padded part for lexicographical sort |
-| `scrub_cursor` | `scrub_cursor` | Opaque cursor string marking scrubber progress through the chunk keyspace; survives leader failover |
 
 ---
 
@@ -115,14 +114,6 @@ message PartRecord {
   repeated string chunk_ids = 5;
   google.protobuf.Timestamp uploaded_at = 6;
 }
-
-message ScrubCursorRecord {
-  string last_chunk_hash = 1;      // SHA-256 of last chunk scanned
-  int64 chunks_verified = 2;       // Cumulative chunks verified this cycle
-  int64 corruptions_found = 3;     // Corruptions detected this cycle
-  google.protobuf.Timestamp cycle_started_at = 4;
-  google.protobuf.Timestamp last_updated_at = 5;
-}
 ```
 
 ---
@@ -143,4 +134,3 @@ message ScrubCursorRecord {
    - Loads `chunk:<sha256>`.
    - Removes the specified `node_address` from `ChunkLocationRecord.nodes`.
    - If `len(nodes) == 0` after removal, sets `orphaned_at = now` (enters 24h quarantine).
-   - Updates `scrub_cursor` with latest progress stats in the same transaction.

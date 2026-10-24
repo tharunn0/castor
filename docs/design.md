@@ -65,7 +65,6 @@ Castor decouples **stateless protocol & console ingress**, **identity management
 - **Leader-Only Embedded Workers**: All garbage collection and healing workers execute exclusively on the active Raft leader, preventing split-brain operations without requiring external schedulers.
 - **Strict Separation of Identity and Storage State**: Relational Auth DB owns user identity and credentials; Raft consensus owns bucket and object manifest state. Zero cross-system distributed 2-phase transactions.
 - **Stateless Presigned URLs**: Time-limited object access URLs are computed using HMAC-SHA256 over `(method, bucket, key, expiry, access_key_id)` directly in the gateway. Zero database storage required; verified by `versitygw`'s built-in query-string SigV4 handler.
-- **Background Bit-Rot Scrubbing**: A leader-only scrubber worker performs periodic full-cluster integrity scans, issuing `ScrubChunk` RPCs (local SHA-256, no byte streaming) to each `data-svc` node. Corruption triggers automatic read-repair and replica replacement. A `scrub_cursor` in BadgerDB ensures progress survives leader failover.
 
 ---
 
