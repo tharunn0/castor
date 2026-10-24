@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -269,5 +270,84 @@ func TestChunkExists(t *testing.T) {
 
 	if store.ChunkExists(expectedHash) {
 		t.Fatal("expected ChunkExists = false after chunk is deleted")
+	}
+}
+
+func TestScanChunks(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := New(tmpDir, MaxChunkSize)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	// 1. Write 3 valid chunks
+	expectedChunks := make(map[string]bool)
+	for range 3 {
+		data, hash, err := randomChunk(1024 * 64)
+		if err != nil {
+			t.Fatalf("randomChunk() failed: %v", err)
+		}
+		if _, err := store.WriteChunk(context.Background(), data, hash); err != nil {
+			t.Fatalf("WriteChunk() failed: %v", err)
+		}
+		expectedChunks[hash] = true
+	}
+
+	// 2. Add files that should be ignored by ScanChunks
+	// A non-directory file in chunk directory
+	_ = os.WriteFile(filepath.Join(store.chunkPath, "stray_file.txt"), []byte("stray"), 0644)
+	// An invalid shard directory name (not 2 chars)
+	invalidShardDir := filepath.Join(store.chunkPath, "xyz")
+	_ = os.MkdirAll(invalidShardDir, 0755)
+	_ = os.WriteFile(filepath.Join(invalidShardDir, "dummy"), []byte("dummy"), 0644)
+
+	// In a valid shard directory, create corrupt and tmp files
+	var sampleHash string
+	for h := range expectedChunks {
+		sampleHash = h
+		break
+	}
+	shardDir := filepath.Join(store.chunkPath, sampleHash[:2])
+	_ = os.WriteFile(filepath.Join(shardDir, sampleHash+".corrupt"), []byte("corrupt"), 0644)
+	_ = os.WriteFile(filepath.Join(shardDir, "short.tmp"), []byte("tmp"), 0644)
+	_ = os.WriteFile(filepath.Join(shardDir, "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"), []byte("nonhex"), 0644)
+	_ = os.MkdirAll(filepath.Join(shardDir, "subfolder"), 0755)
+
+	// 3. ScanChunks should only find the 3 valid chunks
+	scannedChunks := make(map[string]string)
+	err = store.ScanChunks(context.Background(), func(hash, path string) error {
+		scannedChunks[hash] = path
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ScanChunks() failed: %v", err)
+	}
+
+	if len(scannedChunks) != len(expectedChunks) {
+		t.Fatalf("expected %d chunks, got %d", len(expectedChunks), len(scannedChunks))
+	}
+	for h := range expectedChunks {
+		if _, ok := scannedChunks[h]; !ok {
+			t.Errorf("expected chunk %s to be visited", h)
+		}
+	}
+
+	// 4. Test error propagation from callback
+	sentinelErr := errors.New("abort iteration")
+	err = store.ScanChunks(context.Background(), func(hash, path string) error {
+		return sentinelErr
+	})
+	if !errors.Is(err, sentinelErr) {
+		t.Fatalf("expected sentinelErr, got: %v", err)
+	}
+
+	// 5. Test context cancellation
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = store.ScanChunks(ctx, func(hash, path string) error {
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got: %v", err)
 	}
 }

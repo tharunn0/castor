@@ -251,6 +251,74 @@ func (s *Storage) DeleteChunk(hash string) (bool, error) {
 	return true, nil
 }
 
+type ChunkWalkFunc func(hash string, path string) error
+
+func (s *Storage) ScanChunks(ctx context.Context, fn ChunkWalkFunc) error {
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	entries, err := os.ReadDir(s.chunkPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read chunk directory: %w", err)
+	}
+
+	for _, shard := range entries {
+		if ctx != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if !shard.IsDir() {
+			continue
+		}
+		shardName := shard.Name()
+		if len(shardName) != 2 {
+			continue
+		}
+		if _, err := hex.DecodeString(shardName); err != nil {
+			continue
+		}
+
+		shardDir := filepath.Join(s.chunkPath, shardName)
+		chunkEntries, err := os.ReadDir(shardDir)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("read shard directory %s: %w", shardName, err)
+		}
+
+		for _, chunkEntry := range chunkEntries {
+			if ctx != nil && ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if chunkEntry.IsDir() {
+				continue
+			}
+
+			chunkName := chunkEntry.Name()
+			if len(chunkName) != 64 {
+				continue
+			}
+			if _, err := hex.DecodeString(chunkName); err != nil {
+				continue
+			}
+			if chunkName[:2] != shardName {
+				continue
+			}
+
+			chunkFilePath := filepath.Join(shardDir, chunkName)
+			if err := fn(chunkName, chunkFilePath); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
 func chunkPath(path, hashHex string) string {
 	if len(hashHex) < 2 {
 		return ""
