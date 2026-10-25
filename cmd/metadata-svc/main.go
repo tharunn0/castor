@@ -15,9 +15,11 @@ import (
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
 	"github.com/tharunn0/castor/internal/metadata/config"
 	"github.com/tharunn0/castor/internal/metadata/consensus"
+	"github.com/tharunn0/castor/internal/metadata/registry"
 	"github.com/tharunn0/castor/internal/metadata/server"
 	"github.com/tharunn0/castor/internal/metadata/store"
 	metatelemetry "github.com/tharunn0/castor/internal/metadata/telemetry"
+	"github.com/tharunn0/castor/internal/metadata/worker"
 	"github.com/tharunn0/castor/internal/telemetry"
 	"google.golang.org/grpc"
 )
@@ -66,7 +68,40 @@ func main() {
 		os.Exit(1)
 	}
 
+	nodeRegistry := registry.New()
+
+	gcMetrics := worker.NewGCMetrics(tel.Metrics.Registry)
+	gcWorker := worker.NewQuarantineGCWorker(
+		dbStore,
+		raftNode,
+		worker.WithGCLogger(logger),
+		worker.WithGCMetrics(gcMetrics),
+	)
+
+	healerMetrics := worker.NewHealerMetrics(tel.Metrics.Registry)
+	healerWorker := worker.NewActiveReplicaHealer(
+		dbStore,
+		nodeRegistry,
+		raftNode,
+		worker.WithHealerLogger(logger),
+		worker.WithHealerMetrics(healerMetrics),
+	)
+
+	coordinator := worker.NewLeaderCoordinator(
+		raftNode,
+		worker.WithWorkers(gcWorker, healerWorker),
+		worker.WithLogger(logger),
+	)
+	if err := coordinator.Start(ctx); err != nil {
+		logger.Error("failed to start leader coordinator", "error", err)
+		_ = raftNode.Shutdown()
+		_ = dbStore.Close()
+		os.Exit(1)
+	}
+
 	metaServer := server.New(dbStore, raftNode,
+		server.WithRegistry(nodeRegistry),
+		server.WithRepairTrigger(healerWorker.TriggerRepair),
 		server.WithLogger(logger),
 		server.WithMetrics(metaMetrics),
 		server.WithTracer(tel.Tracer),
@@ -77,6 +112,7 @@ func main() {
 	lis, err := net.Listen("tcp", cfg.GRPCAddr)
 	if err != nil {
 		logger.Error("failed to bind gRPC port", "error", err, "addr", cfg.GRPCAddr)
+		coordinator.Stop()
 		_ = raftNode.Shutdown()
 		_ = dbStore.Close()
 		os.Exit(1)
@@ -120,6 +156,7 @@ func main() {
 	}
 
 	grpcServer.GracefulStop()
+	coordinator.Stop()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
