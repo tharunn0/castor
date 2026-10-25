@@ -45,7 +45,8 @@ func (m *mockCommandApplier) Apply(cmd *consensus.Command, timeout time.Duration
 }
 
 type mockDataClient struct {
-	deleteFunc func(ctx context.Context, in *castorv1.DeleteChunkRequest) (*castorv1.DeleteChunkResponse, error)
+	deleteFunc    func(ctx context.Context, in *castorv1.DeleteChunkRequest) (*castorv1.DeleteChunkResponse, error)
+	replicateFunc func(ctx context.Context, in *castorv1.ReplicateChunkRequest) (*castorv1.ReplicateChunkResponse, error)
 }
 
 func (m *mockDataClient) PutChunk(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[castorv1.PutChunkRequest, castorv1.PutChunkResponse], error) {
@@ -61,7 +62,10 @@ func (m *mockDataClient) DeleteChunk(ctx context.Context, in *castorv1.DeleteChu
 	return &castorv1.DeleteChunkResponse{Deleted: true}, nil
 }
 func (m *mockDataClient) ReplicateChunk(ctx context.Context, in *castorv1.ReplicateChunkRequest, opts ...grpc.CallOption) (*castorv1.ReplicateChunkResponse, error) {
-	return nil, nil
+	if m.replicateFunc != nil {
+		return m.replicateFunc(ctx, in)
+	}
+	return &castorv1.ReplicateChunkResponse{Success: true}, nil
 }
 func (m *mockDataClient) HealthCheck(ctx context.Context, in *castorv1.HealthCheckRequest, opts ...grpc.CallOption) (*castorv1.HealthCheckResponse, error) {
 	return nil, nil
