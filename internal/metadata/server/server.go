@@ -29,13 +29,14 @@ type RaftApplier interface {
 
 type Server struct {
 	castorv1.UnimplementedMetadataServiceServer
-	store    *store.Store
-	raft     RaftApplier
-	registry *registry.Registry
-	timeout  time.Duration
-	logger   *slog.Logger
-	tracer   trace.Tracer
-	metrics  *telemetry.MetadataMetrics
+	store         *store.Store
+	raft          RaftApplier
+	registry      *registry.Registry
+	timeout       time.Duration
+	logger        *slog.Logger
+	tracer        trace.Tracer
+	metrics       *telemetry.MetadataMetrics
+	repairTrigger func(chunkHash string)
 }
 
 type Option func(*Server)
@@ -67,6 +68,12 @@ func WithTracer(tracer trace.Tracer) Option {
 func WithMetrics(metrics *telemetry.MetadataMetrics) Option {
 	return func(s *Server) {
 		s.metrics = metrics
+	}
+}
+
+func WithRepairTrigger(trigger func(chunkHash string)) Option {
+	return func(s *Server) {
+		s.repairTrigger = trigger
 	}
 }
 
@@ -613,6 +620,154 @@ func (s *Server) GetActiveNodes(ctx context.Context, req *castorv1.GetActiveNode
 	}
 	nodes := s.registry.GetActiveNodes()
 	return &castorv1.GetActiveNodesResponse{Nodes: nodes}, nil
+}
+
+func (s *Server) UpdateChunkLocation(ctx context.Context, req *castorv1.UpdateChunkLocationRequest) (*castorv1.UpdateChunkLocationResponse, error) {
+	ctx, span := s.tracer.Start(ctx, "Metadata/UpdateChunkLocation",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			attribute.String("chunk.hash", req.GetChunkHash()),
+			attribute.Int("chunk.nodes_count", len(req.GetNodeAddresses())),
+		),
+	)
+	defer span.End()
+
+	if req.GetChunkHash() == "" {
+		err := status.Error(codes.InvalidArgument, "chunk hash is required")
+		span.RecordError(err)
+		return nil, err
+	}
+	if len(req.GetNodeAddresses()) == 0 {
+		err := status.Error(codes.InvalidArgument, "node addresses are required")
+		span.RecordError(err)
+		return nil, err
+	}
+
+	if s.raft != nil && !s.raft.IsLeader() {
+		err := toGRPCError(&consensus.NotLeaderError{LeaderAddr: s.raft.LeaderAddr()})
+		span.RecordError(err)
+		return nil, err
+	}
+
+	cmd, err := consensus.NewUpdateChunkLocationCommand(req)
+	if err != nil {
+		span.RecordError(err)
+		return nil, status.Errorf(codes.Internal, "encode update chunk location command: %v", err)
+	}
+
+	start := time.Now()
+	_, err = s.apply(ctx, cmd)
+	duration := time.Since(start)
+	s.metrics.CommitDuration.WithLabelValues("update_chunk_location").Observe(duration.Seconds())
+
+	if err != nil {
+		s.metrics.CommitsTotal.WithLabelValues("update_chunk_location", "error").Inc()
+		s.logger.ErrorContext(ctx, "failed to apply update chunk location command",
+			"chunk_hash", req.GetChunkHash(),
+			"error", err,
+		)
+		grpcErr := toGRPCError(err)
+		span.RecordError(grpcErr)
+		return nil, grpcErr
+	}
+
+	s.metrics.CommitsTotal.WithLabelValues("update_chunk_location", "success").Inc()
+	s.logger.InfoContext(ctx, "chunk location updated successfully",
+		"chunk_hash", req.GetChunkHash(),
+		"node_addresses", req.GetNodeAddresses(),
+	)
+
+	return &castorv1.UpdateChunkLocationResponse{Updated: true}, nil
+}
+
+func (s *Server) RemoveChunkLocations(ctx context.Context, req *castorv1.RemoveChunkLocationsRequest) (*castorv1.RemoveChunkLocationsResponse, error) {
+	ctx, span := s.tracer.Start(ctx, "Metadata/RemoveChunkLocations",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			attribute.String("chunk.hash", req.GetChunkHash()),
+			attribute.Int("chunk.nodes_count", len(req.GetNodeAddresses())),
+		),
+	)
+	defer span.End()
+
+	if req.GetChunkHash() == "" {
+		err := status.Error(codes.InvalidArgument, "chunk hash is required")
+		span.RecordError(err)
+		return nil, err
+	}
+
+	if s.raft != nil && !s.raft.IsLeader() {
+		err := toGRPCError(&consensus.NotLeaderError{LeaderAddr: s.raft.LeaderAddr()})
+		span.RecordError(err)
+		return nil, err
+	}
+
+	cmd, err := consensus.NewRemoveChunkLocationsCommand(req)
+	if err != nil {
+		span.RecordError(err)
+		return nil, status.Errorf(codes.Internal, "encode remove chunk locations command: %v", err)
+	}
+
+	start := time.Now()
+	_, err = s.apply(ctx, cmd)
+	duration := time.Since(start)
+	s.metrics.CommitDuration.WithLabelValues("remove_chunk_locations").Observe(duration.Seconds())
+
+	if err != nil {
+		s.metrics.CommitsTotal.WithLabelValues("remove_chunk_locations", "error").Inc()
+		s.logger.ErrorContext(ctx, "failed to apply remove chunk locations command",
+			"chunk_hash", req.GetChunkHash(),
+			"error", err,
+		)
+		grpcErr := toGRPCError(err)
+		span.RecordError(grpcErr)
+		return nil, grpcErr
+	}
+
+	s.metrics.CommitsTotal.WithLabelValues("remove_chunk_locations", "success").Inc()
+	s.logger.InfoContext(ctx, "chunk locations removed successfully",
+		"chunk_hash", req.GetChunkHash(),
+		"node_addresses", req.GetNodeAddresses(),
+	)
+
+	return &castorv1.RemoveChunkLocationsResponse{Removed: true}, nil
+}
+
+func (s *Server) TriggerReadRepair(ctx context.Context, req *castorv1.TriggerReadRepairRequest) (*castorv1.TriggerReadRepairResponse, error) {
+	ctx, span := s.tracer.Start(ctx, "Metadata/TriggerReadRepair",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			attribute.String("chunk.hash", req.GetChunkHash()),
+			attribute.String("node.failed_address", req.GetFailedNodeAddress()),
+		),
+	)
+	defer span.End()
+
+	if req.GetChunkHash() == "" {
+		err := status.Error(codes.InvalidArgument, "chunk hash is required")
+		span.RecordError(err)
+		return nil, err
+	}
+
+	if s.raft != nil && !s.raft.IsLeader() {
+		err := toGRPCError(&consensus.NotLeaderError{LeaderAddr: s.raft.LeaderAddr()})
+		span.RecordError(err)
+		return nil, err
+	}
+
+	scheduled := false
+	if s.repairTrigger != nil {
+		s.repairTrigger(req.GetChunkHash())
+		scheduled = true
+	}
+
+	s.logger.InfoContext(ctx, "read repair triggered",
+		"chunk_hash", req.GetChunkHash(),
+		"failed_node", req.GetFailedNodeAddress(),
+		"scheduled", scheduled,
+	)
+
+	return &castorv1.TriggerReadRepairResponse{RepairScheduled: scheduled}, nil
 }
 
 func (s *Server) Registry() *registry.Registry {

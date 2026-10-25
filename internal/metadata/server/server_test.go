@@ -937,3 +937,242 @@ func TestServer_Telemetry(t *testing.T) {
 		t.Errorf("expected complete_mp success to be 1, got %v", val)
 	}
 }
+
+func TestServer_ChunkLocationAndRepairOperations(t *testing.T) {
+	client, s, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// 1. UpdateChunkLocation validation failure (empty chunk hash)
+	_, err := client.UpdateChunkLocation(ctx, &castorv1.UpdateChunkLocationRequest{
+		ChunkHash:     "",
+		NodeAddresses: []string{"10.0.0.1:9101"},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument on empty chunk hash, got: %v", err)
+	}
+
+	// 2. UpdateChunkLocation validation failure (empty node addresses)
+	_, err = client.UpdateChunkLocation(ctx, &castorv1.UpdateChunkLocationRequest{
+		ChunkHash:     "chunk-hash-1",
+		NodeAddresses: nil,
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument on empty node addresses, got: %v", err)
+	}
+
+	// 3. UpdateChunkLocation success
+	updateRes, err := client.UpdateChunkLocation(ctx, &castorv1.UpdateChunkLocationRequest{
+		ChunkHash:     "chunk-hash-1",
+		NodeAddresses: []string{"10.0.0.1:9101"},
+	})
+	if err != nil {
+		t.Fatalf("failed to update chunk location: %v", err)
+	}
+	if !updateRes.GetUpdated() {
+		t.Fatal("expected updated=true in response")
+	}
+
+	loc, err := s.GetChunkLocation(ctx, "chunk-hash-1")
+	if err != nil {
+		t.Fatalf("failed to get chunk location from store: %v", err)
+	}
+	if len(loc.Nodes) != 1 || loc.Nodes[0] != "10.0.0.1:9101" {
+		t.Fatalf("expected nodes [10.0.0.1:9101], got %v", loc.Nodes)
+	}
+
+	// 4. UpdateChunkLocation adds additional node
+	_, err = client.UpdateChunkLocation(ctx, &castorv1.UpdateChunkLocationRequest{
+		ChunkHash:     "chunk-hash-1",
+		NodeAddresses: []string{"10.0.0.2:9101"},
+	})
+	if err != nil {
+		t.Fatalf("failed to update chunk location: %v", err)
+	}
+	loc, err = s.GetChunkLocation(ctx, "chunk-hash-1")
+	if err != nil {
+		t.Fatalf("failed to get chunk location: %v", err)
+	}
+	if len(loc.Nodes) != 2 {
+		t.Fatalf("expected 2 nodes, got %v", loc.Nodes)
+	}
+
+	// 5. RemoveChunkLocations validation failure (empty chunk hash)
+	_, err = client.RemoveChunkLocations(ctx, &castorv1.RemoveChunkLocationsRequest{
+		ChunkHash: "",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument on empty chunk hash, got: %v", err)
+	}
+
+	// 6. RemoveChunkLocations success
+	removeRes, err := client.RemoveChunkLocations(ctx, &castorv1.RemoveChunkLocationsRequest{
+		ChunkHash: "chunk-hash-1",
+	})
+	if err != nil {
+		t.Fatalf("failed to remove chunk locations: %v", err)
+	}
+	if !removeRes.GetRemoved() {
+		t.Fatal("expected removed=true in response")
+	}
+
+	_, err = s.GetChunkLocation(ctx, "chunk-hash-1")
+	if err == nil {
+		t.Fatal("expected chunk location to be deleted from store")
+	}
+
+	// 7. TriggerReadRepair validation failure (empty chunk hash)
+	_, err = client.TriggerReadRepair(ctx, &castorv1.TriggerReadRepairRequest{
+		ChunkHash: "",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument on empty chunk hash, got: %v", err)
+	}
+
+	// 8. TriggerReadRepair with no trigger registered returns RepairScheduled=false
+	triggerRes, err := client.TriggerReadRepair(ctx, &castorv1.TriggerReadRepairRequest{
+		ChunkHash:         "chunk-hash-1",
+		FailedNodeAddress: "10.0.0.3:9101",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error on TriggerReadRepair: %v", err)
+	}
+	if triggerRes.GetRepairScheduled() {
+		t.Fatal("expected repair_scheduled=false when no trigger function is configured")
+	}
+}
+
+func TestServer_TriggerReadRepairWithCallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	s, err := store.Open(filepath.Join(tmpDir, "badger"), true)
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer s.Close()
+
+	fsm := consensus.NewFSM(s, newTestLogger())
+	applier := &directApplier{fsm: fsm}
+
+	repairCh := make(chan string, 1)
+	srv := New(s, applier,
+		WithLogger(newTestLogger()),
+		WithRepairTrigger(func(chunkHash string) {
+			repairCh <- chunkHash
+		}),
+	)
+
+	lis := bufconn.Listen(1024 * 1024)
+	defer lis.Close()
+	grpcServer := grpc.NewServer()
+	defer grpcServer.Stop()
+	castorv1.RegisterMetadataServiceServer(grpcServer, srv)
+
+	go func() {
+		_ = grpcServer.Serve(lis)
+	}()
+
+	conn, err := grpc.NewClient("passthrough://bufnet",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return lis.Dial()
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("failed to dial bufnet: %v", err)
+	}
+	defer conn.Close()
+
+	client := castorv1.NewMetadataServiceClient(conn)
+	ctx := context.Background()
+
+	res, err := client.TriggerReadRepair(ctx, &castorv1.TriggerReadRepairRequest{
+		ChunkHash:         "repaired-chunk-hash",
+		FailedNodeAddress: "10.0.0.5:9101",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error on TriggerReadRepair: %v", err)
+	}
+	if !res.GetRepairScheduled() {
+		t.Fatal("expected repair_scheduled=true when trigger function is configured")
+	}
+
+	select {
+	case h := <-repairCh:
+		if h != "repaired-chunk-hash" {
+			t.Fatalf("expected chunk hash %q, got %q", "repaired-chunk-hash", h)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for repair callback invocation")
+	}
+}
+
+func TestServer_ChunkRepairLeaderEnforcement(t *testing.T) {
+	tmpDir := t.TempDir()
+	s, err := store.Open(filepath.Join(tmpDir, "badger"), true)
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer s.Close()
+
+	follower := &mockFollowerApplier{leaderAddr: "10.0.0.2:9093"}
+	srv := New(s, follower, WithLogger(newTestLogger()))
+
+	lis := bufconn.Listen(1024 * 1024)
+	defer lis.Close()
+	grpcServer := grpc.NewServer()
+	defer grpcServer.Stop()
+	castorv1.RegisterMetadataServiceServer(grpcServer, srv)
+
+	go func() {
+		_ = grpcServer.Serve(lis)
+	}()
+
+	conn, err := grpc.NewClient("passthrough://bufnet",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return lis.Dial()
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("failed to dial bufnet: %v", err)
+	}
+	defer conn.Close()
+
+	client := castorv1.NewMetadataServiceClient(conn)
+	ctx := context.Background()
+
+	// 1. UpdateChunkLocation on non-leader must return Unavailable with leader hint
+	_, err = client.UpdateChunkLocation(ctx, &castorv1.UpdateChunkLocationRequest{
+		ChunkHash:     "hash-1",
+		NodeAddresses: []string{"10.0.0.1:9101"},
+	})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("expected Unavailable on UpdateChunkLocation from follower, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "leader is 10.0.0.2:9093") {
+		t.Fatalf("expected leader address in error, got: %v", err)
+	}
+
+	// 2. RemoveChunkLocations on non-leader must return Unavailable with leader hint
+	_, err = client.RemoveChunkLocations(ctx, &castorv1.RemoveChunkLocationsRequest{
+		ChunkHash: "hash-1",
+	})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("expected Unavailable on RemoveChunkLocations from follower, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "leader is 10.0.0.2:9093") {
+		t.Fatalf("expected leader address in error, got: %v", err)
+	}
+
+	// 3. TriggerReadRepair on non-leader must return Unavailable with leader hint
+	_, err = client.TriggerReadRepair(ctx, &castorv1.TriggerReadRepairRequest{
+		ChunkHash: "hash-1",
+	})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("expected Unavailable on TriggerReadRepair from follower, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "leader is 10.0.0.2:9093") {
+		t.Fatalf("expected leader address in error, got: %v", err)
+	}
+}
