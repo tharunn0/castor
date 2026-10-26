@@ -112,7 +112,7 @@ func main() {
 	lis, err := net.Listen("tcp", cfg.GRPCAddr)
 	if err != nil {
 		logger.Error("failed to bind gRPC port", "error", err, "addr", cfg.GRPCAddr)
-		coordinator.Stop()
+		_ = coordinator.Stop()
 		_ = raftNode.Shutdown()
 		_ = dbStore.Close()
 		os.Exit(1)
@@ -156,7 +156,7 @@ func main() {
 	}
 
 	grpcServer.GracefulStop()
-	coordinator.Stop()
+	_ = coordinator.Stop()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

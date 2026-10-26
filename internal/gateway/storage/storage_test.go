@@ -1275,11 +1275,13 @@ func TestStorageEngine_PassiveReadRepair(t *testing.T) {
 
 	// Identify and stop the first replica node for chunk 0 to guarantee failover
 	failedTarget := manifest.GetChunks()[0].GetNodeAddresses()[0]
-	if failedTarget == node1Addr {
+
+	switch failedTarget {
+	case node1Addr:
 		cleanup1()
-	} else if failedTarget == node2Addr {
+	case node2Addr:
 		cleanup2()
-	} else {
+	default:
 		cleanup3()
 	}
 

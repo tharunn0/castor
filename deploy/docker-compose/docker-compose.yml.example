@@ -104,6 +104,9 @@ services:
     environment:
       - NODE_ID=${DATA_1_NODE_ID:-data-1}
       - GRPC_ADDR=${DATA_1_GRPC_ADDR:-:9101}
+      - ADVERTISE_ADDR=${DATA_1_ADVERTISE_ADDR:-data-1:9101}
+      - METADATA_ADDR=${METADATA_ADDR:-metadata-1:9090}
+      - METADATA_NODES=${METADATA_NODES:-metadata-1:9090,metadata-2:9090,metadata-3:9090}
       - METRICS_ADDR=${DATA_1_METRICS_ADDR:-:9104}
       - DATA_DIR=${DATA_1_DATA_DIR:-/data}
       - APP_ENV=${APP_ENV:-dev}
@@ -117,6 +120,7 @@ services:
     networks:
       - castor-net
     depends_on:
+      - metadata-1
       - otel-collector
     restart: unless-stopped
 
@@ -130,6 +134,9 @@ services:
     environment:
       - NODE_ID=${DATA_2_NODE_ID:-data-2}
       - GRPC_ADDR=${DATA_2_GRPC_ADDR:-:9101}
+      - ADVERTISE_ADDR=${DATA_2_ADVERTISE_ADDR:-data-2:9101}
+      - METADATA_ADDR=${METADATA_ADDR:-metadata-1:9090}
+      - METADATA_NODES=${METADATA_NODES:-metadata-1:9090,metadata-2:9090,metadata-3:9090}
       - METRICS_ADDR=${DATA_2_METRICS_ADDR:-:9104}
       - DATA_DIR=${DATA_2_DATA_DIR:-/data}
       - APP_ENV=${APP_ENV:-dev}
@@ -143,6 +150,7 @@ services:
     networks:
       - castor-net
     depends_on:
+      - metadata-1
       - otel-collector
     restart: unless-stopped
 
@@ -156,6 +164,9 @@ services:
     environment:
       - NODE_ID=${DATA_3_NODE_ID:-data-3}
       - GRPC_ADDR=${DATA_3_GRPC_ADDR:-:9101}
+      - ADVERTISE_ADDR=${DATA_3_ADVERTISE_ADDR:-data-3:9101}
+      - METADATA_ADDR=${METADATA_ADDR:-metadata-1:9090}
+      - METADATA_NODES=${METADATA_NODES:-metadata-1:9090,metadata-2:9090,metadata-3:9090}
       - METRICS_ADDR=${DATA_3_METRICS_ADDR:-:9104}
       - DATA_DIR=${DATA_3_DATA_DIR:-/data}
       - APP_ENV=${APP_ENV:-dev}
@@ -169,6 +180,7 @@ services:
     networks:
       - castor-net
     depends_on:
+      - metadata-1
       - otel-collector
     restart: unless-stopped
 
