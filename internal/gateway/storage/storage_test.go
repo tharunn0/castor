@@ -1226,3 +1226,107 @@ func TestStorageEngine_DeduplicationLogging(t *testing.T) {
 		t.Fatalf("unexpected part upload log content: %s", logPart)
 	}
 }
+
+func TestStorageEngine_PassiveReadRepair(t *testing.T) {
+	node1Addr, cleanup1 := startTestDataNode(t, "data-repair-1")
+	defer cleanup1()
+	node2Addr, cleanup2 := startTestDataNode(t, "data-repair-2")
+	defer cleanup2()
+	node3Addr, cleanup3 := startTestDataNode(t, "data-repair-3")
+	defer cleanup3()
+
+	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-repair")
+	defer metaCleanup()
+
+	cfg := config.Config{
+		ChunkSize:            4 << 20,
+		WriteQuorum:          3,
+		MaxConcurrentUploads: 4,
+		DataNodes:            []string{node1Addr, node2Addr, node3Addr},
+	}
+
+	engine := New(cfg, metaClient)
+	defer engine.Close()
+
+	ctx := context.Background()
+	bucket := "repair-bucket"
+	if err := engine.CreateBucket(ctx, bucket, "admin", nil); err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	// Payload strictly > 4MiB to generate multiple chunks
+	payload := make([]byte, (4<<20)+512*1024)
+	for i := range payload {
+		payload[i] = byte(i % 251)
+	}
+
+	_, err := engine.PutObject(ctx, bucket, "multi-chunk-repair.bin", "admin", bytes.NewReader(payload), int64(len(payload)))
+	if err != nil {
+		t.Fatalf("failed to put multi-chunk object: %v", err)
+	}
+
+	manifest, err := engine.GetManifest(ctx, bucket, "multi-chunk-repair.bin")
+	if err != nil {
+		t.Fatalf("failed to get manifest: %v", err)
+	}
+	if len(manifest.GetChunks()) == 0 || len(manifest.GetChunks()[0].GetNodeAddresses()) == 0 {
+		t.Fatal("expected manifest to have chunks with replica node addresses")
+	}
+
+	// Identify and stop the first replica node for chunk 0 to guarantee failover
+	failedTarget := manifest.GetChunks()[0].GetNodeAddresses()[0]
+	if failedTarget == node1Addr {
+		cleanup1()
+	} else if failedTarget == node2Addr {
+		cleanup2()
+	} else {
+		cleanup3()
+	}
+
+	repairCh := make(chan struct {
+		chunkHash  string
+		failedNode string
+	}, 10)
+
+	engine.WithReadRepairHook(func(chunkHash, failedNode string) {
+		repairCh <- struct {
+			chunkHash  string
+			failedNode string
+		}{chunkHash: chunkHash, failedNode: failedNode}
+	})
+
+	rc, _, err := engine.GetObject(ctx, bucket, "multi-chunk-repair.bin")
+	if err != nil {
+		t.Fatalf("failed to get object after replica failed: %v", err)
+	}
+	defer rc.Close()
+
+	readData, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("failed to read object data through failover: %v", err)
+	}
+	if !bytes.Equal(readData, payload) {
+		t.Fatalf("data mismatch on failover: expected %d bytes, got %d bytes", len(payload), len(readData))
+	}
+
+	var triggeredRepairs int
+drain:
+	for {
+		select {
+		case req := <-repairCh:
+			if req.failedNode != failedTarget {
+				t.Fatalf("expected failedNode %s, got %s", failedTarget, req.failedNode)
+			}
+			if req.chunkHash == "" {
+				t.Fatal("expected non-empty chunkHash in read-repair trigger")
+			}
+			triggeredRepairs++
+		case <-time.After(500 * time.Millisecond):
+			break drain
+		}
+	}
+
+	if triggeredRepairs == 0 {
+		t.Fatal("expected at least one passive read-repair to be triggered")
+	}
+}

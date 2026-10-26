@@ -65,6 +65,7 @@ type StorageEngine struct {
 	activeLeader string
 	metrics      *gwtelemetry.GatewayMetrics
 	logger       *slog.Logger
+	onReadRepair func(chunkHash, failedNode string)
 }
 
 func (e *StorageEngine) WithMetrics(m *gwtelemetry.GatewayMetrics) *StorageEngine {
@@ -80,6 +81,44 @@ func (e *StorageEngine) WithLogger(l *slog.Logger) *StorageEngine {
 		e.logger = l
 	}
 	return e
+}
+
+func (e *StorageEngine) WithReadRepairHook(hook func(chunkHash, failedNode string)) *StorageEngine {
+	e.onReadRepair = hook
+	return e
+}
+
+func (e *StorageEngine) triggerReadRepair(chunkHash, failedNode string) {
+	if e == nil || chunkHash == "" {
+		return
+	}
+	if e.onReadRepair != nil {
+		e.onReadRepair(chunkHash, failedNode)
+	}
+	go func() {
+		repairCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		err := e.executeWithLeader(repairCtx, func(client castorv1.MetadataServiceClient) error {
+			_, err := client.TriggerReadRepair(repairCtx, &castorv1.TriggerReadRepairRequest{
+				ChunkHash:         chunkHash,
+				FailedNodeAddress: failedNode,
+			})
+			return err
+		})
+		if err != nil {
+			e.logger.Debug("failed to trigger read repair",
+				"chunk_hash", chunkHash,
+				"failed_node", failedNode,
+				"error", err,
+			)
+			return
+		}
+		e.logger.Debug("triggered passive read repair",
+			"chunk_hash", chunkHash,
+			"failed_node", failedNode,
+		)
+	}()
 }
 
 func New(cfg config.Config, metaClient castorv1.MetadataServiceClient) *StorageEngine {
@@ -665,11 +704,16 @@ func (r *chunkStreamReader) readChunkWithFailover(chunkHash string, size int64, 
 	}
 
 	var lastErr error
+	var failedNodes []string
 	for _, nodeAddr := range candidateNodes {
 		data, err := r.engine.placement.ReadChunkFromNode(r.ctx, nodeAddr, chunkHash, size)
 		if err == nil {
+			if len(failedNodes) > 0 {
+				r.engine.triggerReadRepair(chunkHash, failedNodes[0])
+			}
 			return data, nil
 		}
+		failedNodes = append(failedNodes, nodeAddr)
 		lastErr = err
 	}
 
