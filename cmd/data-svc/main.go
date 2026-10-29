@@ -18,6 +18,7 @@ import (
 	"github.com/tharunn0/castor/internal/data/storage"
 	datatelemetry "github.com/tharunn0/castor/internal/data/telemetry"
 	"github.com/tharunn0/castor/internal/telemetry"
+	"github.com/tharunn0/castor/internal/version"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/stats"
@@ -42,6 +43,8 @@ func main() {
 	dataMetrics := datatelemetry.NewDataMetrics(cfg.NodeId, tel.Metrics)
 
 	logger.Info("starting data service",
+		"version", version.Version,
+		"commit", version.Commit,
 		"node_id", cfg.NodeId,
 		"grpc_addr", cfg.GRPCAddr,
 		"metrics_addr", cfg.MetricsAddr,

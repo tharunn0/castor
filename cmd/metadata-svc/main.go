@@ -21,6 +21,7 @@ import (
 	metatelemetry "github.com/tharunn0/castor/internal/metadata/telemetry"
 	"github.com/tharunn0/castor/internal/metadata/worker"
 	"github.com/tharunn0/castor/internal/telemetry"
+	"github.com/tharunn0/castor/internal/version"
 	"google.golang.org/grpc"
 )
 
@@ -41,6 +42,8 @@ func main() {
 	metaMetrics := metatelemetry.NewMetadataMetrics(cfg.NodeID, tel.Metrics)
 
 	logger.Info("starting metadata service",
+		"version", version.Version,
+		"commit", version.Commit,
 		"node_id", cfg.NodeID,
 		"grpc_addr", cfg.GRPCAddr,
 		"raft_addr", cfg.RaftAddr,

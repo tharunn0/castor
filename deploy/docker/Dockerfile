@@ -13,21 +13,25 @@ COPY . .
 
 # Build metadata-svc binary
 FROM builder AS build-metadata
+ARG VERSION=dev
+ARG COMMIT=unknown
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
-    -ldflags="-s -w" \
+    -ldflags="-s -w -X github.com/tharunn0/castor/internal/version.Version=${VERSION} -X github.com/tharunn0/castor/internal/version.Commit=${COMMIT}" \
     -o /bin/metadata-svc ./cmd/metadata-svc && \
     mkdir -p /data && chown -R 65532:65532 /data
 
 # Build data-svc binary
 FROM builder AS build-data
+ARG VERSION=dev
+ARG COMMIT=unknown
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
-    -ldflags="-s -w" \
+    -ldflags="-s -w -X github.com/tharunn0/castor/internal/version.Version=${VERSION} -X github.com/tharunn0/castor/internal/version.Commit=${COMMIT}" \
     -o /bin/data-svc ./cmd/data-svc && \
     mkdir -p /data && chown -R 65532:65532 /data
 
@@ -57,11 +61,13 @@ ENTRYPOINT ["/bin/data-svc"]
 
 # Build gateway-svc binary
 FROM builder AS build-gateway
+ARG VERSION=dev
+ARG COMMIT=unknown
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
-    -ldflags="-s -w" \
+    -ldflags="-s -w -X github.com/tharunn0/castor/internal/version.Version=${VERSION} -X github.com/tharunn0/castor/internal/version.Commit=${COMMIT}" \
     -o /bin/gateway-svc ./cmd/gateway-svc
 
 # Final image: gateway-svc
@@ -76,11 +82,13 @@ ENTRYPOINT ["/bin/gateway-svc"]
 
 # Build auth-svc binary
 FROM builder AS build-auth
+ARG VERSION=dev
+ARG COMMIT=unknown
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
-    -ldflags="-s -w" \
+    -ldflags="-s -w -X github.com/tharunn0/castor/internal/version.Version=${VERSION} -X github.com/tharunn0/castor/internal/version.Commit=${COMMIT}" \
     -o /bin/auth-svc ./cmd/auth-svc
 
 # Final image: auth-svc

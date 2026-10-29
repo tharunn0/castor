@@ -99,6 +99,7 @@ func defaultDial(ctx context.Context, target string) (*grpc.ClientConn, castorv1
 	if err != nil {
 		return nil, nil, err
 	}
+
 	return conn, castorv1.NewMetadataServiceClient(conn), nil
 }
 

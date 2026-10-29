@@ -7,6 +7,17 @@ GOTEST     := $(GOCMD) test
 GOFMT      := gofmt
 GOCLEAN    := $(GOCMD) clean
 
+# Versioning & images
+SERVICES     ?= metadata-svc data-svc gateway-svc auth-svc
+VERSION      ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT       ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+IMAGE_TAG    ?= $(patsubst v%,%,$(VERSION))
+REGISTRY     ?= ghcr.io/tharunn0
+PLATFORMS    ?= linux/amd64,linux/arm64
+DOCKERFILE   := deploy/docker/Dockerfile
+VERSION_PKG  := github.com/tharunn0/castor/internal/version
+LDFLAGS      := -s -w -X $(VERSION_PKG).Version=$(VERSION) -X $(VERSION_PKG).Commit=$(COMMIT)
+
 # Test configurations
 TEST_TIMEOUT   := 120s
 RACE_TIMEOUT   := 300s
@@ -57,3 +68,27 @@ test-data: ## Run data-svc tests
 test-auth: ## Run auth-svc tests
 	@echo "==> Testing auth-svc..."
 	@$(GOTEST) -v -count=1 -timeout $(TEST_TIMEOUT) ./internal/auth/...
+
+
+# Build & Release
+version: ## Print the version that builds and images will be stamped with
+	@echo "version=$(VERSION) commit=$(COMMIT) image_tag=$(IMAGE_TAG)"
+build: ## Build service binaries into bin/ (SERVICES=... to limit)
+	@for svc in $(SERVICES); do \
+		echo "==> Building $$svc $(VERSION)..."; \
+		CGO_ENABLED=0 $(GOBUILD) -trimpath -ldflags "$(LDFLAGS)" -o bin/$$svc ./cmd/$$svc || exit 1; \
+	done
+images: ## Build service images for the host platform into the local Docker daemon
+	@for svc in $(SERVICES); do \
+		echo "==> Building image $(REGISTRY)/castor-$$svc:$(IMAGE_TAG)..."; \
+		docker buildx build -f $(DOCKERFILE) --target $$svc \
+			--build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) \
+			-t $(REGISTRY)/castor-$$svc:$(IMAGE_TAG) --load . || exit 1; \
+	done
+push: ## Build multi-arch service images and push them to $(REGISTRY)
+	@for svc in $(SERVICES); do \
+		echo "==> Pushing image $(REGISTRY)/castor-$$svc:$(IMAGE_TAG)..."; \
+		docker buildx build -f $(DOCKERFILE) --target $$svc --platform $(PLATFORMS) \
+			--build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) \
+			-t $(REGISTRY)/castor-$$svc:$(IMAGE_TAG) --push . || exit 1; \
+	done

@@ -20,6 +20,7 @@ import (
 	"github.com/tharunn0/castor/internal/auth/service"
 	authtel "github.com/tharunn0/castor/internal/auth/telemetry"
 	"github.com/tharunn0/castor/internal/telemetry"
+	"github.com/tharunn0/castor/internal/version"
 )
 
 func main() {
@@ -42,6 +43,8 @@ func main() {
 	}
 
 	logger.Info("starting auth service",
+		"version", version.Version,
+		"commit", version.Commit,
 		"http_addr", cfg.HTTPAddr,
 	)
 

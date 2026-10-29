@@ -18,6 +18,7 @@ import (
 	"github.com/tharunn0/castor/internal/gateway/storage"
 	gwtelemetry "github.com/tharunn0/castor/internal/gateway/telemetry"
 	"github.com/tharunn0/castor/internal/telemetry"
+	"github.com/tharunn0/castor/internal/version"
 	"github.com/versity/versitygw/embedgw"
 	"github.com/versity/versitygw/s3api"
 	"google.golang.org/grpc"
@@ -39,6 +40,8 @@ func main() {
 	cfg := config.Load()
 
 	logger.Info("starting gateway service",
+		"version", version.Version,
+		"commit", version.Commit,
 		"s3_addr", cfg.S3Addr,
 		"console_addr", cfg.ConsoleAddr,
 		"metadata_addr", cfg.MetadataAddr,

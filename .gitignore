@@ -40,3 +40,6 @@ versity.md
 # Local deployment with secrets
 deploy/docker-compose/docker-compose-auth.yml
 deploy/docker-compose/docker-compose.yml 
+
+# Build output
+bin/
