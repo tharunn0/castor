@@ -86,6 +86,10 @@ images: ## Build service images for the host platform into the local Docker daem
 			-t $(REGISTRY)/castor-$$svc:$(IMAGE_TAG) --load . || exit 1; \
 	done
 push: ## Build multi-arch service images and push them to $(REGISTRY)
+	@case "$(VERSION)" in *-dirty) \
+		echo "refusing to push $(VERSION): working tree has uncommitted changes (commit or stash first)" >&2; \
+		exit 1;; \
+	esac
 	@for svc in $(SERVICES); do \
 		echo "==> Pushing image $(REGISTRY)/castor-$$svc:$(IMAGE_TAG)..."; \
 		docker buildx build -f $(DOCKERFILE) --target $$svc --platform $(PLATFORMS) \
