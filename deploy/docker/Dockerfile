@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.4
 FROM golang:alpine AS builder
 
 WORKDIR /src
@@ -6,8 +5,7 @@ WORKDIR /src
 RUN apk add --no-cache ca-certificates tzdata
 
 COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download
+RUN go mod download
 
 COPY . .
 
@@ -15,10 +13,10 @@ COPY . .
 FROM builder AS build-metadata
 ARG VERSION=dev
 ARG COMMIT=unknown
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
+RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
+    -mod=readonly \
     -ldflags="-s -w -X github.com/tharunn0/castor/internal/version.Version=${VERSION} -X github.com/tharunn0/castor/internal/version.Commit=${COMMIT}" \
     -o /bin/metadata-svc ./cmd/metadata-svc && \
     mkdir -p /data && chown -R 65532:65532 /data
@@ -27,10 +25,10 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM builder AS build-data
 ARG VERSION=dev
 ARG COMMIT=unknown
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
+RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
+    -mod=readonly \
     -ldflags="-s -w -X github.com/tharunn0/castor/internal/version.Version=${VERSION} -X github.com/tharunn0/castor/internal/version.Commit=${COMMIT}" \
     -o /bin/data-svc ./cmd/data-svc && \
     mkdir -p /data && chown -R 65532:65532 /data
@@ -63,10 +61,10 @@ ENTRYPOINT ["/bin/data-svc"]
 FROM builder AS build-gateway
 ARG VERSION=dev
 ARG COMMIT=unknown
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
+RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
+    -mod=readonly \
     -ldflags="-s -w -X github.com/tharunn0/castor/internal/version.Version=${VERSION} -X github.com/tharunn0/castor/internal/version.Commit=${COMMIT}" \
     -o /bin/gateway-svc ./cmd/gateway-svc
 
@@ -84,10 +82,10 @@ ENTRYPOINT ["/bin/gateway-svc"]
 FROM builder AS build-auth
 ARG VERSION=dev
 ARG COMMIT=unknown
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
+RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
+    -mod=readonly \
     -ldflags="-s -w -X github.com/tharunn0/castor/internal/version.Version=${VERSION} -X github.com/tharunn0/castor/internal/version.Commit=${COMMIT}" \
     -o /bin/auth-svc ./cmd/auth-svc
 

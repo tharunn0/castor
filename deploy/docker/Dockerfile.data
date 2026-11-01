@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.4
 FROM golang:alpine AS builder
 
 WORKDIR /src
@@ -6,15 +5,14 @@ WORKDIR /src
 RUN apk add --no-cache ca-certificates tzdata
 
 COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download
+RUN go mod download
 
 COPY . .
 
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
+RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
+    -mod=readonly \
     -ldflags="-s -w" \
     -o /bin/data-svc ./cmd/data-svc
 
