@@ -14,6 +14,9 @@ linters:
     - unused
 
   exclusions:
+    paths:
+      - scripts/
+
     rules:
       # Avoid noise from intentionally ignored errors in tests.
       - path: '.*_test\.go'
