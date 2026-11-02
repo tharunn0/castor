@@ -425,12 +425,10 @@ func (e *StorageEngine) PutObject(ctx context.Context, bucket, key, ownerID stri
 		for {
 			n, readErr := io.ReadFull(reader, buf)
 			if n > 0 {
-				chunkBytes := make([]byte, n)
-				copy(chunkBytes, buf[:n])
 
-				h := sha256.Sum256(chunkBytes)
+				h := sha256.Sum256(buf[:n])
 				chunkHash := hex.EncodeToString(h[:])
-				objHasher.Write(chunkBytes)
+				objHasher.Write(buf[:n])
 
 				chunkIDs = append(chunkIDs, chunkHash)
 				totalSize += int64(n)
@@ -461,7 +459,7 @@ func (e *StorageEngine) PutObject(ctx context.Context, bucket, key, ownerID stri
 							return "", err
 						}
 
-						successfulNodes, err := e.placement.WriteChunkQuorum(ctx, chunkHash, chunkBytes, targets)
+						successfulNodes, err := e.placement.WriteChunkQuorum(ctx, chunkHash, buf[:n], targets)
 						if err != nil {
 							return "", err
 						}
