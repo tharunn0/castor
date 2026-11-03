@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"slices"
 	"strconv"
@@ -58,14 +59,15 @@ type StorageEngine struct {
 	placement  *PlacementManager
 	pool       *BufferPool
 
-	metaMu       sync.RWMutex
-	metaNodes    []string
-	metaClients  map[string]castorv1.MetadataServiceClient
-	metaConns    map[string]*grpc.ClientConn
-	activeLeader string
-	metrics      *gwtelemetry.GatewayMetrics
-	logger       *slog.Logger
-	onReadRepair func(chunkHash, failedNode string)
+	metaMu          sync.RWMutex
+	metaNodes       []string
+	metaClients     map[string]castorv1.MetadataServiceClient
+	metaConns       map[string]*grpc.ClientConn
+	activeLeader    string
+	metrics         *gwtelemetry.GatewayMetrics
+	logger          *slog.Logger
+	onReadRepair    func(chunkHash, failedNode string)
+	replicaShuffler func([]string)
 }
 
 func (e *StorageEngine) WithMetrics(m *gwtelemetry.GatewayMetrics) *StorageEngine {
@@ -85,6 +87,11 @@ func (e *StorageEngine) WithLogger(l *slog.Logger) *StorageEngine {
 
 func (e *StorageEngine) WithReadRepairHook(hook func(chunkHash, failedNode string)) *StorageEngine {
 	e.onReadRepair = hook
+	return e
+}
+
+func (e *StorageEngine) WithReplicaShuffler(shuffler func([]string)) *StorageEngine {
+	e.replicaShuffler = shuffler
 	return e
 }
 
@@ -695,35 +702,47 @@ func (r *chunkStreamReader) Read(p []byte) (int, error) {
 }
 
 func (r *chunkStreamReader) readChunkWithFailover(chunkHash string, size int64, nodes []string) ([]byte, error) {
-	seen := make(map[string]struct{}, len(nodes))
-	var candidateNodes []string
-	for _, addr := range nodes {
-		candidateNodes = append(candidateNodes, addr)
-		seen[addr] = struct{}{}
+	if r.engine != nil && r.engine.replicaShuffler != nil {
+		r.engine.replicaShuffler(nodes)
+	} else if len(nodes) > 1 {
+		rand.Shuffle(len(nodes), func(i, j int) {
+			nodes[i], nodes[j] = nodes[j], nodes[i]
+		})
 	}
+
+	var lastErr error
+	var failedNodes []string
+	for _, nodeAddr := range nodes {
+		data, err := r.engine.placement.ReadChunkFromNode(r.ctx, nodeAddr, chunkHash, size)
+		if err == nil {
+			for _, failedNode := range failedNodes {
+				r.engine.triggerReadRepair(chunkHash, failedNode)
+			}
+			return data, nil
+		}
+		failedNodes = append(failedNodes, nodeAddr)
+		lastErr = err
+	}
+
 	activeNodes := r.engine.placement.getActiveNodes(r.ctx)
 	for _, node := range activeNodes {
 		addr := node.GetGrpcAddress()
 		if addr == "" || node.GetStatus() == castorv1.NodeStatus_NODE_STATUS_OFFLINE {
 			continue
 		}
-		if _, ok := seen[addr]; !ok {
-			candidateNodes = append(candidateNodes, addr)
-			seen[addr] = struct{}{}
-		}
-	}
 
-	var lastErr error
-	var failedNodes []string
-	for _, nodeAddr := range candidateNodes {
-		data, err := r.engine.placement.ReadChunkFromNode(r.ctx, nodeAddr, chunkHash, size)
+		if slices.Contains(nodes, addr) {
+			continue
+		}
+
+		data, err := r.engine.placement.ReadChunkFromNode(r.ctx, addr, chunkHash, size)
 		if err == nil {
-			if len(failedNodes) > 0 {
-				r.engine.triggerReadRepair(chunkHash, failedNodes[0])
+			for _, failedNode := range failedNodes {
+				r.engine.triggerReadRepair(chunkHash, failedNode)
 			}
 			return data, nil
 		}
-		failedNodes = append(failedNodes, nodeAddr)
+		failedNodes = append(failedNodes, addr)
 		lastErr = err
 	}
 

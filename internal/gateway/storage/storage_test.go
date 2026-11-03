@@ -11,7 +11,9 @@ import (
 	"log/slog"
 	"net"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1314,21 +1316,37 @@ func TestStorageEngine_PassiveReadRepair(t *testing.T) {
 		}{chunkHash: chunkHash, failedNode: failedNode}
 	})
 
-	rc, _, err := engine.GetObject(ctx, bucket, "multi-chunk-repair.bin")
-	if err != nil {
-		t.Fatalf("failed to get object after replica failed: %v", err)
-	}
-	defer rc.Close()
-
-	readData, err := io.ReadAll(rc)
-	if err != nil {
-		t.Fatalf("failed to read object data through failover: %v", err)
-	}
-	if !bytes.Equal(readData, payload) {
-		t.Fatalf("data mismatch on failover: expected %d bytes, got %d bytes", len(payload), len(readData))
-	}
-
 	var triggeredRepairs int
+	for range 20 {
+		rc, _, err := engine.GetObject(ctx, bucket, "multi-chunk-repair.bin")
+		if err != nil {
+			t.Fatalf("failed to get object after replica failed: %v", err)
+		}
+		readData, err := io.ReadAll(rc)
+		_ = rc.Close()
+		if err != nil {
+			t.Fatalf("failed to read object data through failover: %v", err)
+		}
+		if !bytes.Equal(readData, payload) {
+			t.Fatalf("data mismatch on failover: expected %d bytes, got %d bytes", len(payload), len(readData))
+		}
+
+		select {
+		case req := <-repairCh:
+			if req.failedNode != failedTarget {
+				t.Fatalf("expected failedNode %s, got %s", failedTarget, req.failedNode)
+			}
+			if req.chunkHash == "" {
+				t.Fatal("expected non-empty chunkHash in read-repair trigger")
+			}
+			triggeredRepairs++
+		default:
+		}
+		if triggeredRepairs > 0 {
+			break
+		}
+	}
+
 drain:
 	for {
 		select {
@@ -1340,7 +1358,7 @@ drain:
 				t.Fatal("expected non-empty chunkHash in read-repair trigger")
 			}
 			triggeredRepairs++
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(100 * time.Millisecond):
 			break drain
 		}
 	}
@@ -1378,5 +1396,144 @@ func TestStorageEngine_PutObject_FailFastWhenNoDataNodes(t *testing.T) {
 	_, err := engine.PutObject(ctx, bucket, "obj.bin", "admin", &panicReader{}, 5*1024*1024)
 	if !errors.Is(err, ErrNoNodes) && !errors.Is(err, ErrQuorumNotMet) {
 		t.Fatalf("expected ErrNoNodes or ErrQuorumNotMet, got %v", err)
+	}
+}
+
+func TestStorageEngine_ReplicaShuffling(t *testing.T) {
+	node1Addr, cleanup1 := startTestDataNode(t, "data-s1")
+	defer cleanup1()
+	node2Addr, cleanup2 := startTestDataNode(t, "data-s2")
+	defer cleanup2()
+	node3Addr, cleanup3 := startTestDataNode(t, "data-s3")
+	defer cleanup3()
+
+	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-shuffle")
+	defer metaCleanup()
+
+	registerTestDataNode(t, metaClient, "data-s1", node1Addr)
+	registerTestDataNode(t, metaClient, "data-s2", node2Addr)
+	registerTestDataNode(t, metaClient, "data-s3", node3Addr)
+
+	cfg := config.Config{
+		ChunkSize:            4 << 20,
+		WriteQuorum:          3,
+		MaxConcurrentUploads: 4,
+	}
+
+	engine := New(cfg, metaClient)
+	defer engine.Close()
+
+	ctx := context.Background()
+	bucket := "shuffle-bucket"
+	if err := engine.CreateBucket(ctx, bucket, "admin", nil); err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	payload := make([]byte, (4<<20)+512*1024)
+	for i := range payload {
+		payload[i] = byte(i % 199)
+	}
+
+	_, err := engine.PutObject(ctx, bucket, "shuffle.bin", "admin", bytes.NewReader(payload), int64(len(payload)))
+	if err != nil {
+		t.Fatalf("failed to put multi-chunk object: %v", err)
+	}
+
+	var shufflerCalls int
+	var seenFirstNodes = make(map[string]int)
+	engine.WithReplicaShuffler(func(nodes []string) {
+		shufflerCalls++
+		slices.Reverse(nodes)
+		if len(nodes) > 0 {
+			seenFirstNodes[nodes[0]]++
+		}
+	})
+
+	rc, _, err := engine.GetObject(ctx, bucket, "shuffle.bin")
+	if err != nil {
+		t.Fatalf("failed to get object: %v", err)
+	}
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("failed to read object data: %v", err)
+	}
+	if !bytes.Equal(data, payload) {
+		t.Fatal("read data mismatch")
+	}
+
+	if shufflerCalls == 0 {
+		t.Fatal("expected replicaShuffler to be invoked during read")
+	}
+
+	manifest, err := engine.GetManifest(ctx, bucket, "shuffle.bin")
+	if err != nil {
+		t.Fatalf("failed to get manifest: %v", err)
+	}
+	chunk0Nodes := manifest.GetChunks()[0].GetNodeAddresses()
+	if len(chunk0Nodes) < 3 {
+		t.Fatalf("expected at least 3 nodes, got %d", len(chunk0Nodes))
+	}
+
+	failedNodeA := chunk0Nodes[0]
+	failedNodeB := chunk0Nodes[1]
+	survivingNode := chunk0Nodes[2]
+
+	switch failedNodeA {
+	case node1Addr:
+		cleanup1()
+	case node2Addr:
+		cleanup2()
+	default:
+		cleanup3()
+	}
+	switch failedNodeB {
+	case node1Addr:
+		cleanup1()
+	case node2Addr:
+		cleanup2()
+	default:
+		cleanup3()
+	}
+
+	repairMap := make(map[string]bool)
+	var repairMu sync.Mutex
+	engine.WithReadRepairHook(func(chunkHash, failedNode string) {
+		repairMu.Lock()
+		repairMap[failedNode] = true
+		repairMu.Unlock()
+	})
+
+	engine.WithReplicaShuffler(func(nodes []string) {
+		for i, n := range nodes {
+			if n == survivingNode {
+				nodes[i], nodes[len(nodes)-1] = nodes[len(nodes)-1], nodes[i]
+				break
+			}
+		}
+	})
+
+	rc2, _, err := engine.GetObject(ctx, bucket, "shuffle.bin")
+	if err != nil {
+		t.Fatalf("failed to get object with 2 failed replicas: %v", err)
+	}
+	defer rc2.Close()
+
+	data2, err := io.ReadAll(rc2)
+	if err != nil {
+		t.Fatalf("failed to read object with 2 failed replicas: %v", err)
+	}
+	if !bytes.Equal(data2, payload) {
+		t.Fatal("read data mismatch during multi-failover")
+	}
+
+	repairMu.Lock()
+	repairedA := repairMap[failedNodeA]
+	repairedB := repairMap[failedNodeB]
+	repairMu.Unlock()
+
+	if !repairedA || !repairedB {
+		t.Fatalf("expected both %s and %s to be repaired, got repairedA=%v, repairedB=%v", failedNodeA, failedNodeB, repairedA, repairedB)
 	}
 }
