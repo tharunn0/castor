@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
 	dataconfig "github.com/tharunn0/castor/internal/data/config"
@@ -302,5 +303,155 @@ func TestPlacementReadChunkChecksumMismatch(t *testing.T) {
 	}
 	if !errors.Is(err, ErrChecksumMismatch) {
 		t.Fatalf("expected ErrChecksumMismatch, got %v", err)
+	}
+}
+
+func startDelayedDataNode(t *testing.T, nodeID string, delay time.Duration) (string, func()) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	casStore, err := datastorage.New(tmpDir, 4<<20)
+	if err != nil {
+		t.Fatalf("[%s] failed to initialize CAS storage: %v", nodeID, err)
+	}
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("[%s] failed to listen on loopback port: %v", nodeID, err)
+	}
+
+	addr := lis.Addr().String()
+	nodeCfg := dataconfig.NodeConfig{
+		NodeId:   nodeID,
+		GRPCAddr: addr,
+		DataDir:  tmpDir,
+	}
+
+	var opts []grpc.ServerOption
+	if delay > 0 {
+		opts = append(opts, grpc.StreamInterceptor(func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+			time.Sleep(delay)
+			return handler(srv, ss)
+		}))
+	}
+
+	grpcServer := grpc.NewServer(opts...)
+	srv := dataserver.New(casStore, nodeCfg)
+	castorv1.RegisterDataServiceServer(grpcServer, srv)
+
+	go func() {
+		_ = grpcServer.Serve(lis)
+	}()
+
+	cleanup := func() {
+		grpcServer.GracefulStop()
+		_ = lis.Close()
+	}
+
+	return addr, cleanup
+}
+
+func TestPlacementWriteQuorum_GracePeriod_Success(t *testing.T) {
+	addr1, cleanup1 := startDelayedDataNode(t, "gp-node-1", 0)
+	defer cleanup1()
+	addr2, cleanup2 := startDelayedDataNode(t, "gp-node-2", 0)
+	defer cleanup2()
+	addr3, cleanup3 := startDelayedDataNode(t, "gp-node-3", 25*time.Millisecond)
+	defer cleanup3()
+
+	pm := NewPlacementManager(2, WithWriteGracePeriod(150*time.Millisecond))
+	defer pm.Close()
+
+	ctx := context.Background()
+	payload := []byte("grace period test payload")
+	hash := computeSHA256(payload)
+
+	successfulNodes, err := pm.WriteChunkQuorum(ctx, hash, payload, []string{addr1, addr2, addr3})
+	if err != nil {
+		t.Fatalf("WriteChunkQuorum failed: %v", err)
+	}
+	if len(successfulNodes) != 3 {
+		t.Fatalf("expected all 3 nodes to succeed within grace period, got %d: %v", len(successfulNodes), successfulNodes)
+	}
+}
+
+func TestPlacementWriteQuorum_GracePeriod_Timeout(t *testing.T) {
+	addr1, cleanup1 := startDelayedDataNode(t, "gp-node-1", 0)
+	defer cleanup1()
+	addr2, cleanup2 := startDelayedDataNode(t, "gp-node-2", 0)
+	defer cleanup2()
+	addr3, cleanup3 := startDelayedDataNode(t, "gp-node-3", 300*time.Millisecond)
+	defer cleanup3()
+
+	pm := NewPlacementManager(2, WithWriteGracePeriod(30*time.Millisecond))
+	defer pm.Close()
+
+	ctx := context.Background()
+	payload := []byte("grace period timeout payload")
+	hash := computeSHA256(payload)
+
+	start := time.Now()
+	successfulNodes, err := pm.WriteChunkQuorum(ctx, hash, payload, []string{addr1, addr2, addr3})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("WriteChunkQuorum failed: %v", err)
+	}
+	if len(successfulNodes) != 2 {
+		t.Fatalf("expected 2 nodes when 3rd exceeds grace period, got %d", len(successfulNodes))
+	}
+	if elapsed >= 250*time.Millisecond {
+		t.Fatalf("WriteChunkQuorum took %v; expected to bail out around grace period (~30ms)", elapsed)
+	}
+}
+
+func TestPlacementWriteQuorum_GracePeriod_FastFailRemaining(t *testing.T) {
+	addr1, cleanup1 := startDelayedDataNode(t, "gp-node-1", 0)
+	defer cleanup1()
+	addr2, cleanup2 := startDelayedDataNode(t, "gp-node-2", 0)
+	defer cleanup2()
+
+	pm := NewPlacementManager(2, WithWriteGracePeriod(500*time.Millisecond))
+	defer pm.Close()
+
+	ctx := context.Background()
+	payload := []byte("fast fail payload")
+	hash := computeSHA256(payload)
+
+	start := time.Now()
+	successfulNodes, err := pm.WriteChunkQuorum(ctx, hash, payload, []string{addr1, addr2, "127.0.0.1:54321"})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("WriteChunkQuorum failed: %v", err)
+	}
+	if len(successfulNodes) != 2 {
+		t.Fatalf("expected 2 successful nodes, got %d", len(successfulNodes))
+	}
+	if elapsed >= 400*time.Millisecond {
+		t.Fatalf("WriteChunkQuorum took %v; expected fast exit without waiting full grace period", elapsed)
+	}
+}
+
+func TestPlacementWriteQuorum_GracePeriod_Disabled(t *testing.T) {
+	addr1, cleanup1 := startDelayedDataNode(t, "gp-node-1", 0)
+	defer cleanup1()
+	addr2, cleanup2 := startDelayedDataNode(t, "gp-node-2", 0)
+	defer cleanup2()
+	addr3, cleanup3 := startDelayedDataNode(t, "gp-node-3", 100*time.Millisecond)
+	defer cleanup3()
+
+	pm := NewPlacementManager(2, WithWriteGracePeriod(0))
+	defer pm.Close()
+
+	ctx := context.Background()
+	payload := []byte("grace disabled payload")
+	hash := computeSHA256(payload)
+
+	successfulNodes, err := pm.WriteChunkQuorum(ctx, hash, payload, []string{addr1, addr2, addr3})
+	if err != nil {
+		t.Fatalf("WriteChunkQuorum failed: %v", err)
+	}
+	if len(successfulNodes) != 2 {
+		t.Fatalf("expected exactly 2 nodes with grace period disabled, got %d", len(successfulNodes))
 	}
 }

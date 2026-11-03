@@ -130,7 +130,7 @@ func (e *StorageEngine) triggerReadRepair(chunkHash, failedNode string) {
 
 func New(cfg config.Config, metaClient castorv1.MetadataServiceClient) *StorageEngine {
 	pool := NewBufferPool(cfg.ChunkSize, cfg.MaxConcurrentUploads)
-	placement := NewPlacementManager(cfg.WriteQuorum)
+	placement := NewPlacementManager(cfg.WriteQuorum, WithWriteGracePeriod(cfg.WriteQuorumGracePeriod))
 
 	metaClients := make(map[string]castorv1.MetadataServiceClient)
 	metaConns := make(map[string]*grpc.ClientConn)

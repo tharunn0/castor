@@ -1683,3 +1683,94 @@ func TestStorageEngine_ReadChecksumMismatch_LoggingAndMetrics(t *testing.T) {
 		t.Fatal("timed out waiting for read repair hook")
 	}
 }
+
+func TestStorageEngine_PutObject_GracePeriod(t *testing.T) {
+	node1Addr, cleanup1 := startTestDataNode(t, "gp-data-1")
+	defer cleanup1()
+	node2Addr, cleanup2 := startTestDataNode(t, "gp-data-2")
+	defer cleanup2()
+	node3Addr, cleanup3 := startTestDataNode(t, "gp-data-3")
+	defer cleanup3()
+
+	_, metaClient, metaCleanup := startTestMetadataNode(t, "gp-meta-1")
+	defer metaCleanup()
+
+	registerTestDataNode(t, metaClient, "gp-data-1", node1Addr)
+	registerTestDataNode(t, metaClient, "gp-data-2", node2Addr)
+	registerTestDataNode(t, metaClient, "gp-data-3", node3Addr)
+
+	ctx := context.Background()
+	_, err := metaClient.CreateBucket(ctx, &castorv1.CreateBucketMetadataRequest{
+		Bucket:  "gp-bucket",
+		OwnerId: "user1",
+	})
+	if err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	payloadSize := int64((4 << 20) + (1 << 20))
+	data := make([]byte, payloadSize)
+	_, _ = rand.Read(data)
+
+	// 1. With WriteQuorumGracePeriod = 150ms, all 3 nodes should succeed
+	cfgWithGrace := config.Config{
+		ChunkSize:              4 << 20,
+		WriteQuorum:            2,
+		WriteQuorumGracePeriod: 150 * time.Millisecond,
+		MaxConcurrentUploads:   4,
+	}
+	engineWithGrace := New(cfgWithGrace, metaClient)
+	defer engineWithGrace.Close()
+
+	_, err = engineWithGrace.PutObject(ctx, "gp-bucket", "obj-with-grace", "user1", bytes.NewReader(data), payloadSize)
+	if err != nil {
+		t.Fatalf("PutObject with grace period failed: %v", err)
+	}
+
+	manifestResp, err := metaClient.GetManifest(ctx, &castorv1.GetManifestRequest{
+		Bucket: "gp-bucket",
+		Key:    "obj-with-grace",
+	})
+	if err != nil {
+		t.Fatalf("GetManifest failed: %v", err)
+	}
+	if len(manifestResp.GetChunks()) < 2 {
+		t.Fatalf("expected at least 2 chunks, got %d", len(manifestResp.GetChunks()))
+	}
+	for i, chunk := range manifestResp.GetChunks() {
+		if len(chunk.GetNodeAddresses()) != 3 {
+			t.Fatalf("chunk %d expected 3 replicas with grace period, got %d: %v", i, len(chunk.GetNodeAddresses()), chunk.GetNodeAddresses())
+		}
+	}
+
+	// 2. With WriteQuorumGracePeriod = 0 (disabled), only quorum (2) nodes should be recorded
+	cfgDisabled := config.Config{
+		ChunkSize:              4 << 20,
+		WriteQuorum:            2,
+		WriteQuorumGracePeriod: 0,
+		MaxConcurrentUploads:   4,
+	}
+	engineDisabled := New(cfgDisabled, metaClient)
+	defer engineDisabled.Close()
+
+	data2 := make([]byte, payloadSize)
+	_, _ = rand.Read(data2)
+
+	_, err = engineDisabled.PutObject(ctx, "gp-bucket", "obj-disabled-grace", "user1", bytes.NewReader(data2), payloadSize)
+	if err != nil {
+		t.Fatalf("PutObject with disabled grace period failed: %v", err)
+	}
+
+	manifestRespDisabled, err := metaClient.GetManifest(ctx, &castorv1.GetManifestRequest{
+		Bucket: "gp-bucket",
+		Key:    "obj-disabled-grace",
+	})
+	if err != nil {
+		t.Fatalf("GetManifest failed: %v", err)
+	}
+	for i, chunk := range manifestRespDisabled.GetChunks() {
+		if len(chunk.GetNodeAddresses()) != 2 {
+			t.Fatalf("chunk %d expected exactly 2 replicas with grace period disabled, got %d: %v", i, len(chunk.GetNodeAddresses()), chunk.GetNodeAddresses())
+		}
+	}
+}

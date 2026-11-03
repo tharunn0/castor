@@ -41,10 +41,17 @@ func WithActiveNodeCacheTTL(ttl time.Duration) PlacementOption {
 	}
 }
 
+func WithWriteGracePeriod(d time.Duration) PlacementOption {
+	return func(m *PlacementManager) {
+		m.writeGracePeriod = d
+	}
+}
+
 // PlacementManager manages and interacts with data nodes
 type PlacementManager struct {
 	mu                 sync.RWMutex
 	writeQuorum        int
+	writeGracePeriod   time.Duration
 	clients            map[string]castorv1.DataServiceClient
 	conns              map[string]*grpc.ClientConn
 	activeNodeProvider ActiveNodeProvider
@@ -55,10 +62,11 @@ type PlacementManager struct {
 
 func NewPlacementManager(writeQuorum int, opts ...PlacementOption) *PlacementManager {
 	m := &PlacementManager{
-		writeQuorum: writeQuorum,
-		clients:     make(map[string]castorv1.DataServiceClient),
-		conns:       make(map[string]*grpc.ClientConn),
-		cacheTTL:    3 * time.Second,
+		writeQuorum:      writeQuorum,
+		writeGracePeriod: 100 * time.Millisecond,
+		clients:          make(map[string]castorv1.DataServiceClient),
+		conns:            make(map[string]*grpc.ClientConn),
+		cacheTTL:         3 * time.Second,
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -204,20 +212,51 @@ func (m *PlacementManager) WriteChunkQuorum(ctx context.Context, chunkHash strin
 	failedCount := 0
 	maxFailures := len(targets) - m.writeQuorum
 
-	for range len(targets) {
+	var graceTimer *time.Timer
+	var graceCh <-chan time.Time
+	defer func() {
+		if graceTimer != nil {
+			graceTimer.Stop()
+		}
+	}()
+
+	for len(successfulNodes)+failedCount < len(targets) {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
+		case <-graceCh:
+			for {
+				select {
+				case res := <-resCh:
+					if res.err == nil {
+						successfulNodes = append(successfulNodes, res.node)
+					}
+				default:
+					return successfulNodes, nil
+				}
+			}
 		case res := <-resCh:
 			if res.err == nil {
 				successfulNodes = append(successfulNodes, res.node)
-				if len(successfulNodes) >= m.writeQuorum {
+				if len(successfulNodes) == len(targets) {
 					return successfulNodes, nil
+				}
+				if len(successfulNodes) >= m.writeQuorum {
+					if m.writeGracePeriod <= 0 || len(successfulNodes)+failedCount == len(targets) {
+						return successfulNodes, nil
+					}
+					if graceTimer == nil {
+						graceTimer = time.NewTimer(m.writeGracePeriod)
+						graceCh = graceTimer.C
+					}
 				}
 			} else {
 				failedCount++
 				if failedCount > maxFailures {
 					return nil, fmt.Errorf("%w: %v", ErrQuorumNotMet, res.err)
+				}
+				if len(successfulNodes) >= m.writeQuorum && len(successfulNodes)+failedCount == len(targets) {
+					return successfulNodes, nil
 				}
 			}
 		}

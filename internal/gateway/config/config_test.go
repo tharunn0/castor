@@ -2,13 +2,14 @@ package config
 
 import (
 	"testing"
+	"time"
 )
 
 func TestConfigLoadDefaults(t *testing.T) {
 	for _, env := range []string{
 		"S3_ADDR", "CONSOLE_ADDR", "METADATA_ADDR", "AUTH_ADDR",
 		"ROOT_ACCESS_KEY_ID", "ROOT_SECRET_ACCESS_KEY", "CHUNK_SIZE",
-		"WRITE_QUORUM", "MAX_CONCURRENT_UPLOADS",
+		"WRITE_QUORUM", "WRITE_QUORUM_GRACE_PERIOD", "MAX_CONCURRENT_UPLOADS",
 	} {
 		t.Setenv(env, "")
 	}
@@ -39,6 +40,9 @@ func TestConfigLoadDefaults(t *testing.T) {
 	if cfg.WriteQuorum != 2 {
 		t.Errorf("expected WriteQuorum 2, got %d", cfg.WriteQuorum)
 	}
+	if cfg.WriteQuorumGracePeriod != 100*time.Millisecond {
+		t.Errorf("expected WriteQuorumGracePeriod 100ms, got %v", cfg.WriteQuorumGracePeriod)
+	}
 	if cfg.MaxConcurrentUploads != 64 {
 		t.Errorf("expected MaxConcurrentUploads 64, got %d", cfg.MaxConcurrentUploads)
 	}
@@ -53,6 +57,7 @@ func TestConfigLoadCustom(t *testing.T) {
 	t.Setenv("ROOT_SECRET_ACCESS_KEY", "custom_secret")
 	t.Setenv("CHUNK_SIZE", "8388608")
 	t.Setenv("WRITE_QUORUM", "3")
+	t.Setenv("WRITE_QUORUM_GRACE_PERIOD", "250ms")
 	t.Setenv("MAX_CONCURRENT_UPLOADS", "32")
 
 	cfg := Load()
@@ -81,7 +86,18 @@ func TestConfigLoadCustom(t *testing.T) {
 	if cfg.WriteQuorum != 3 {
 		t.Errorf("expected WriteQuorum 3, got %d", cfg.WriteQuorum)
 	}
+	if cfg.WriteQuorumGracePeriod != 250*time.Millisecond {
+		t.Errorf("expected WriteQuorumGracePeriod 250ms, got %v", cfg.WriteQuorumGracePeriod)
+	}
 	if cfg.MaxConcurrentUploads != 32 {
 		t.Errorf("expected MaxConcurrentUploads 32, got %d", cfg.MaxConcurrentUploads)
+	}
+}
+
+func TestConfigLoadGracePeriodDisabled(t *testing.T) {
+	t.Setenv("WRITE_QUORUM_GRACE_PERIOD", "0s")
+	cfg := Load()
+	if cfg.WriteQuorumGracePeriod != 0 {
+		t.Errorf("expected WriteQuorumGracePeriod 0, got %v", cfg.WriteQuorumGracePeriod)
 	}
 }

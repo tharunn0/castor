@@ -4,21 +4,23 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
 
 type Config struct {
-	S3Addr               string
-	ConsoleAddr          string
-	MetadataAddr         string
-	MetadataNodes        []string
-	AuthAddr             string
-	RootAccessKey        string
-	RootSecretKey        string
-	ChunkSize            int64
-	WriteQuorum          int
-	MaxConcurrentUploads int
+	S3Addr                 string
+	ConsoleAddr            string
+	MetadataAddr           string
+	MetadataNodes          []string
+	AuthAddr               string
+	RootAccessKey          string
+	RootSecretKey          string
+	ChunkSize              int64
+	WriteQuorum            int
+	WriteQuorumGracePeriod time.Duration
+	MaxConcurrentUploads   int
 }
 
 func Load() Config {
@@ -57,6 +59,13 @@ func Load() Config {
 		}
 	}
 
+	writeQuorumGracePeriod := 100 * time.Millisecond
+	if v := os.Getenv("WRITE_QUORUM_GRACE_PERIOD"); v != "" {
+		if parsed, err := time.ParseDuration(v); err == nil && parsed >= 0 {
+			writeQuorumGracePeriod = parsed
+		}
+	}
+
 	maxConcurrentUploads := 64
 	if v := os.Getenv("MAX_CONCURRENT_UPLOADS"); v != "" {
 		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
@@ -65,16 +74,17 @@ func Load() Config {
 	}
 
 	return Config{
-		S3Addr:               s3Addr,
-		ConsoleAddr:          consoleAddr,
-		MetadataAddr:         metadataAddr,
-		MetadataNodes:        metadataNodes,
-		AuthAddr:             authAddr,
-		RootAccessKey:        rootAccessKey,
-		RootSecretKey:        rootSecretKey,
-		ChunkSize:            chunkSize,
-		WriteQuorum:          writeQuorum,
-		MaxConcurrentUploads: maxConcurrentUploads,
+		S3Addr:                 s3Addr,
+		ConsoleAddr:            consoleAddr,
+		MetadataAddr:           metadataAddr,
+		MetadataNodes:          metadataNodes,
+		AuthAddr:               authAddr,
+		RootAccessKey:          rootAccessKey,
+		RootSecretKey:          rootSecretKey,
+		ChunkSize:              chunkSize,
+		WriteQuorum:            writeQuorum,
+		WriteQuorumGracePeriod: writeQuorumGracePeriod,
+		MaxConcurrentUploads:   maxConcurrentUploads,
 	}
 }
 

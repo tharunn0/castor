@@ -182,6 +182,7 @@ Castor services are configured through environment variables:
 | `CONSOLE_ADDR` | Listen address for Health / Fiber API | `:9001` |
 | `METADATA_NODES` | Comma-separated list of `metadata-svc` gRPC endpoints | `localhost:9090` |
 | `WRITE_QUORUM` | Required chunk replica acks for write success | `2` |
+| `WRITE_QUORUM_GRACE_PERIOD` | Grace period to wait for tail replicas after quorum | `100ms` |
 | `CHUNK_SIZE` | Chunk size in bytes (Invariant: 4MiB) | `4194304` |
 | `ROOT_ACCESS_KEY_ID` | Bootstrap root S3 Access Key ID | `admin` |
 | `ROOT_SECRET_ACCESS_KEY` | Bootstrap root S3 Secret Access Key | `admin123` |
