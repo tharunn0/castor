@@ -15,7 +15,6 @@ func TestHealthEndpoints(t *testing.T) {
 	cfg := config.Config{
 		ChunkSize:   4096,
 		WriteQuorum: 2,
-		DataNodes:   []string{"node1", "node2"},
 	}
 
 	app := NewApp(cfg)

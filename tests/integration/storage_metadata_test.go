@@ -31,6 +31,19 @@ func computeSHA256(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func registerTestDataNode(t *testing.T, client castorv1.MetadataServiceClient, nodeID, addr string) {
+	t.Helper()
+	_, err := client.RegisterNode(context.Background(), &castorv1.RegisterNodeRequest{
+		NodeId:      nodeID,
+		GrpcAddress: addr,
+		TotalBytes:  100 * (1 << 30),
+		FreeBytes:   100 * (1 << 30),
+	})
+	if err != nil {
+		t.Fatalf("failed to register test data node %s: %v", nodeID, err)
+	}
+}
+
 func startTestDataNode(t *testing.T, nodeID string) (string, func()) {
 	t.Helper()
 

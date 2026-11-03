@@ -1,13 +1,12 @@
 package config
 
 import (
-	"reflect"
 	"testing"
 )
 
 func TestConfigLoadDefaults(t *testing.T) {
 	for _, env := range []string{
-		"S3_ADDR", "CONSOLE_ADDR", "METADATA_ADDR", "DATA_NODES", "AUTH_ADDR",
+		"S3_ADDR", "CONSOLE_ADDR", "METADATA_ADDR", "AUTH_ADDR",
 		"ROOT_ACCESS_KEY_ID", "ROOT_SECRET_ACCESS_KEY", "CHUNK_SIZE",
 		"WRITE_QUORUM", "MAX_CONCURRENT_UPLOADS",
 	} {
@@ -27,10 +26,6 @@ func TestConfigLoadDefaults(t *testing.T) {
 	}
 	if cfg.AuthAddr != "http://127.0.0.1:9095" {
 		t.Errorf("expected AuthAddr http://127.0.0.1:9095, got %s", cfg.AuthAddr)
-	}
-	expectedNodes := []string{"127.0.0.1:9101", "127.0.0.1:9102", "127.0.0.1:9103"}
-	if !reflect.DeepEqual(cfg.DataNodes, expectedNodes) {
-		t.Errorf("expected DataNodes %v, got %v", expectedNodes, cfg.DataNodes)
 	}
 	if cfg.RootAccessKey != "admin" {
 		t.Errorf("expected RootAccessKey admin, got %s", cfg.RootAccessKey)
@@ -53,7 +48,6 @@ func TestConfigLoadCustom(t *testing.T) {
 	t.Setenv("S3_ADDR", ":8000")
 	t.Setenv("CONSOLE_ADDR", ":8001")
 	t.Setenv("METADATA_ADDR", "meta.internal:9090")
-	t.Setenv("DATA_NODES", "node1:9101, node2:9101")
 	t.Setenv("AUTH_ADDR", "http://auth.internal:9095")
 	t.Setenv("ROOT_ACCESS_KEY_ID", "custom_key")
 	t.Setenv("ROOT_SECRET_ACCESS_KEY", "custom_secret")
@@ -74,10 +68,6 @@ func TestConfigLoadCustom(t *testing.T) {
 	}
 	if cfg.AuthAddr != "http://auth.internal:9095" {
 		t.Errorf("expected AuthAddr http://auth.internal:9095, got %s", cfg.AuthAddr)
-	}
-	expectedNodes := []string{"node1:9101", "node2:9101"}
-	if !reflect.DeepEqual(cfg.DataNodes, expectedNodes) {
-		t.Errorf("expected DataNodes %v, got %v", expectedNodes, cfg.DataNodes)
 	}
 	if cfg.RootAccessKey != "custom_key" {
 		t.Errorf("expected RootAccessKey custom_key, got %s", cfg.RootAccessKey)

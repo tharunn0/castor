@@ -47,12 +47,15 @@ func setupMultipartGateway(t *testing.T) (s3Client *s3.Client, metaClient castor
 	}
 	metaClient = castorv1.NewMetadataServiceClient(metaConn)
 
+	registerTestDataNode(t, metaClient, "data-mp-1", node1Addr)
+	registerTestDataNode(t, metaClient, "data-mp-2", node2Addr)
+	registerTestDataNode(t, metaClient, "data-mp-3", node3Addr)
+
 	s3Addr := getFreePort(t)
 
 	cfg := gwconfig.Config{
 		S3Addr:               s3Addr,
 		MetadataAddr:         metaAddr,
-		DataNodes:            []string{node1Addr, node2Addr, node3Addr},
 		RootAccessKey:        "admin",
 		RootSecretKey:        "admin123",
 		ChunkSize:            4 << 20, // 4MiB standard system chunk size

@@ -13,7 +13,6 @@ type Config struct {
 	ConsoleAddr          string
 	MetadataAddr         string
 	MetadataNodes        []string
-	DataNodes            []string
 	AuthAddr             string
 	RootAccessKey        string
 	RootSecretKey        string
@@ -38,15 +37,6 @@ func Load() Config {
 	}
 	if len(metadataNodes) == 0 && metadataAddr != "" {
 		metadataNodes = []string{metadataAddr}
-	}
-
-	dataNodesRaw := getEnv("DATA_NODES", "127.0.0.1:9101,127.0.0.1:9102,127.0.0.1:9103")
-	var dataNodes []string
-	for node := range strings.SplitSeq(dataNodesRaw, ",") {
-		trimmed := strings.TrimSpace(node)
-		if trimmed != "" {
-			dataNodes = append(dataNodes, trimmed)
-		}
 	}
 
 	authAddr := getEnv("AUTH_ADDR", "http://127.0.0.1:9095")
@@ -79,7 +69,6 @@ func Load() Config {
 		ConsoleAddr:          consoleAddr,
 		MetadataAddr:         metadataAddr,
 		MetadataNodes:        metadataNodes,
-		DataNodes:            dataNodes,
 		AuthAddr:             authAddr,
 		RootAccessKey:        rootAccessKey,
 		RootSecretKey:        rootSecretKey,

@@ -222,7 +222,7 @@ func startHealingMetadataCluster(t *testing.T, nodeID string, gcTTL time.Duratio
 	}
 }
 
-func startHealingS3Gateway(t *testing.T, meta *healingMetadataCluster, dataNodes []string, writeQuorum int) (*s3.Client, *gwstorage.StorageEngine, func()) {
+func startHealingS3Gateway(t *testing.T, meta *healingMetadataCluster, _ []string, writeQuorum int) (*s3.Client, *gwstorage.StorageEngine, func()) {
 	t.Helper()
 
 	s3Addr := getFreePort(t)
@@ -232,7 +232,6 @@ func startHealingS3Gateway(t *testing.T, meta *healingMetadataCluster, dataNodes
 		S3Addr:               s3Addr,
 		ConsoleAddr:          consoleAddr,
 		MetadataAddr:         meta.addr,
-		DataNodes:            dataNodes,
 		RootAccessKey:        "admin",
 		RootSecretKey:        "admin123",
 		ChunkSize:            4 << 20, // 4MiB chunk size invariant

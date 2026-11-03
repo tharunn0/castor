@@ -27,7 +27,6 @@ func NewHandler(cfg config.Config) fiber.Handler {
 			"version":   "v0.1.0",
 			"config": fiber.Map{
 				"write_quorum": cfg.WriteQuorum,
-				"data_nodes":   len(cfg.DataNodes),
 				"chunk_size":   cfg.ChunkSize,
 			},
 		})

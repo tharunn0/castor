@@ -69,7 +69,6 @@ func TestStorageEngine_DeleteObject(t *testing.T) {
 		ChunkSize:            4096,
 		WriteQuorum:          2,
 		MaxConcurrentUploads: 4,
-		DataNodes:            []string{"127.0.0.1:9101"},
 		MetadataAddr:         metaAddr,
 	}
 
@@ -217,11 +216,14 @@ func TestStorageEngine_PutObject(t *testing.T) {
 	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-1")
 	defer metaCleanup()
 
+	registerTestDataNode(t, metaClient, "data-1", node1Addr)
+	registerTestDataNode(t, metaClient, "data-2", node2Addr)
+	registerTestDataNode(t, metaClient, "data-3", node3Addr)
+
 	cfg := config.Config{
 		ChunkSize:            1024,
 		WriteQuorum:          2,
 		MaxConcurrentUploads: 4,
-		DataNodes:            []string{node1Addr, node2Addr, node3Addr},
 	}
 
 	engine := New(cfg, metaClient)
@@ -311,11 +313,14 @@ func TestStorageEngine_PutObject_Deduplication(t *testing.T) {
 	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-dedup")
 	defer metaCleanup()
 
+	registerTestDataNode(t, metaClient, "data-dedup-1", node1Addr)
+	registerTestDataNode(t, metaClient, "data-dedup-2", node2Addr)
+	registerTestDataNode(t, metaClient, "data-dedup-3", node3Addr)
+
 	cfg := config.Config{
 		ChunkSize:            4 << 20,
 		WriteQuorum:          2,
 		MaxConcurrentUploads: 4,
-		DataNodes:            []string{node1Addr, node2Addr, node3Addr},
 	}
 
 	engine := New(cfg, metaClient)
@@ -400,11 +405,14 @@ func TestStorageEngine_GetObject(t *testing.T) {
 	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-1")
 	defer metaCleanup()
 
+	registerTestDataNode(t, metaClient, "data-1", node1Addr)
+	registerTestDataNode(t, metaClient, "data-2", node2Addr)
+	registerTestDataNode(t, metaClient, "data-3", node3Addr)
+
 	cfg := config.Config{
 		ChunkSize:            4 << 20,
 		WriteQuorum:          2,
 		MaxConcurrentUploads: 4,
-		DataNodes:            []string{node1Addr, node2Addr, node3Addr},
 	}
 
 	engine := New(cfg, metaClient)
@@ -544,7 +552,6 @@ func TestStorageEngine_CreateBucket(t *testing.T) {
 		ChunkSize:            4096,
 		WriteQuorum:          2,
 		MaxConcurrentUploads: 4,
-		DataNodes:            []string{"127.0.0.1:9101"},
 		MetadataAddr:         metaAddr,
 	}
 
@@ -587,7 +594,6 @@ func TestStorageEngine_ListBuckets(t *testing.T) {
 		ChunkSize:            4096,
 		WriteQuorum:          2,
 		MaxConcurrentUploads: 4,
-		DataNodes:            []string{"127.0.0.1:9101"},
 		MetadataAddr:         metaAddr,
 	}
 
@@ -641,7 +647,6 @@ func TestStorageEngine_DeleteBucket(t *testing.T) {
 		ChunkSize:            4096,
 		WriteQuorum:          2,
 		MaxConcurrentUploads: 4,
-		DataNodes:            []string{"127.0.0.1:9101"},
 		MetadataAddr:         metaAddr,
 	}
 
@@ -930,11 +935,14 @@ func TestStorageEngine_MultipartUpload(t *testing.T) {
 	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-mp")
 	defer metaCleanup()
 
+	registerTestDataNode(t, metaClient, "data-mp-1", node1Addr)
+	registerTestDataNode(t, metaClient, "data-mp-2", node2Addr)
+	registerTestDataNode(t, metaClient, "data-mp-3", node3Addr)
+
 	cfg := config.Config{
 		ChunkSize:            1024,
 		WriteQuorum:          2,
 		MaxConcurrentUploads: 4,
-		DataNodes:            []string{node1Addr, node2Addr, node3Addr},
 	}
 
 	engine := New(cfg, metaClient)
@@ -1070,11 +1078,14 @@ func TestStorageEngine_UploadPart_Deduplication(t *testing.T) {
 	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-mp-dedup")
 	defer metaCleanup()
 
+	registerTestDataNode(t, metaClient, "data-mp-dedup-1", node1Addr)
+	registerTestDataNode(t, metaClient, "data-mp-dedup-2", node2Addr)
+	registerTestDataNode(t, metaClient, "data-mp-dedup-3", node3Addr)
+
 	cfg := config.Config{
 		ChunkSize:            4 << 20,
 		WriteQuorum:          2,
 		MaxConcurrentUploads: 4,
-		DataNodes:            []string{node1Addr, node2Addr, node3Addr},
 	}
 
 	engine := New(cfg, metaClient)
@@ -1156,11 +1167,14 @@ func TestStorageEngine_DeduplicationLogging(t *testing.T) {
 	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-log")
 	defer metaCleanup()
 
+	registerTestDataNode(t, metaClient, "data-log-1", node1Addr)
+	registerTestDataNode(t, metaClient, "data-log-2", node2Addr)
+	registerTestDataNode(t, metaClient, "data-log-3", node3Addr)
+
 	cfg := config.Config{
 		ChunkSize:            4 << 20,
 		WriteQuorum:          2,
 		MaxConcurrentUploads: 4,
-		DataNodes:            []string{node1Addr, node2Addr, node3Addr},
 	}
 
 	var logBuf bytes.Buffer
@@ -1238,11 +1252,14 @@ func TestStorageEngine_PassiveReadRepair(t *testing.T) {
 	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-repair")
 	defer metaCleanup()
 
+	registerTestDataNode(t, metaClient, "data-repair-1", node1Addr)
+	registerTestDataNode(t, metaClient, "data-repair-2", node2Addr)
+	registerTestDataNode(t, metaClient, "data-repair-3", node3Addr)
+
 	cfg := config.Config{
 		ChunkSize:            4 << 20,
 		WriteQuorum:          3,
 		MaxConcurrentUploads: 4,
-		DataNodes:            []string{node1Addr, node2Addr, node3Addr},
 	}
 
 	engine := New(cfg, metaClient)
@@ -1330,5 +1347,36 @@ drain:
 
 	if triggeredRepairs == 0 {
 		t.Fatal("expected at least one passive read-repair to be triggered")
+	}
+}
+
+type panicReader struct{}
+
+func (p *panicReader) Read(b []byte) (int, error) {
+	panic("reader must not be read when no data nodes are available")
+}
+
+func TestStorageEngine_PutObject_FailFastWhenNoDataNodes(t *testing.T) {
+	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-failfast")
+	defer metaCleanup()
+
+	cfg := config.Config{
+		ChunkSize:            4 << 20,
+		WriteQuorum:          2,
+		MaxConcurrentUploads: 4,
+	}
+
+	engine := New(cfg, metaClient)
+	defer engine.Close()
+
+	ctx := context.Background()
+	bucket := "failfast-bucket"
+	if err := engine.CreateBucket(ctx, bucket, "admin", nil); err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	_, err := engine.PutObject(ctx, bucket, "obj.bin", "admin", &panicReader{}, 5*1024*1024)
+	if !errors.Is(err, ErrNoNodes) && !errors.Is(err, ErrQuorumNotMet) {
+		t.Fatalf("expected ErrNoNodes or ErrQuorumNotMet, got %v", err)
 	}
 }

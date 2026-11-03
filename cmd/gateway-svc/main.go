@@ -26,6 +26,7 @@ import (
 )
 
 func main() {
+
 	ctx := context.Background()
 	tel, err := telemetry.Init(ctx, "gateway-svc")
 	if err != nil {
@@ -46,7 +47,6 @@ func main() {
 		"console_addr", cfg.ConsoleAddr,
 		"metadata_addr", cfg.MetadataAddr,
 		"metadata_nodes", cfg.MetadataNodes,
-		"data_nodes", cfg.DataNodes,
 		"auth_addr", cfg.AuthAddr,
 	)
 

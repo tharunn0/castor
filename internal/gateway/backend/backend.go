@@ -232,6 +232,8 @@ func (b *CastorBackend) PutObject(ctx context.Context, input s3response.PutObjec
 			err = s3err.GetBucketErr(s3err.ErrNoSuchBucket, bucket)
 		} else if s, ok := status.FromError(err); ok && s.Code() == codes.NotFound {
 			err = s3err.GetBucketErr(s3err.ErrNoSuchBucket, bucket)
+		} else if errors.Is(err, storage.ErrQuorumNotMet) || errors.Is(err, storage.ErrNoNodes) {
+			err = s3err.GetAPIError(s3err.ErrSlowDown)
 		}
 		b.recordMetric("PUT", err, start)
 		b.logger.ErrorContext(ctx, "failed to put object", "bucket", bucket, "key", key, "error", err)
@@ -895,6 +897,8 @@ func (b *CastorBackend) UploadPart(ctx context.Context, input *s3.UploadPartInpu
 			err = s3err.GetBucketErr(s3err.ErrNoSuchBucket, bucket)
 		} else if errors.Is(err, storage.ErrInvalidPart) {
 			err = s3err.GetAPIError(s3err.ErrInvalidPart)
+		} else if errors.Is(err, storage.ErrQuorumNotMet) || errors.Is(err, storage.ErrNoNodes) {
+			err = s3err.GetAPIError(s3err.ErrSlowDown)
 		}
 		b.recordMetric("PUT", err, start)
 		b.logger.ErrorContext(ctx, "failed to upload part", "bucket", bucket, "key", key, "upload_id", uploadID, "part_number", partNum, "error", err)
@@ -986,6 +990,8 @@ func (b *CastorBackend) CompleteMultipartUpload(ctx context.Context, input *s3.C
 			err = s3err.GetAPIError(s3err.ErrNoSuchUpload)
 		} else if errors.Is(err, storage.ErrInvalidPart) {
 			err = s3err.GetAPIError(s3err.ErrInvalidPart)
+		} else if errors.Is(err, storage.ErrQuorumNotMet) || errors.Is(err, storage.ErrNoNodes) {
+			err = s3err.GetAPIError(s3err.ErrSlowDown)
 		} else if errors.Is(err, storage.ErrBucketNotFound) {
 			err = s3err.GetBucketErr(s3err.ErrNoSuchBucket, bucket)
 		}

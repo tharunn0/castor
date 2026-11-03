@@ -163,6 +163,19 @@ func startTestMetadataNode(t *testing.T, nodeID string) (string, castorv1.Metada
 	return addr, metaClient, cleanup
 }
 
+func registerTestDataNode(t *testing.T, client castorv1.MetadataServiceClient, nodeID, addr string) {
+	t.Helper()
+	_, err := client.RegisterNode(context.Background(), &castorv1.RegisterNodeRequest{
+		NodeId:      nodeID,
+		GrpcAddress: addr,
+		TotalBytes:  100 * (1 << 30),
+		FreeBytes:   100 * (1 << 30),
+	})
+	if err != nil {
+		t.Fatalf("failed to register test data node %s: %v", nodeID, err)
+	}
+}
+
 func TestCastorBackend_PutObject(t *testing.T) {
 	node1Addr, cleanup1 := startTestDataNode(t, "data-1")
 	defer cleanup1()
@@ -172,11 +185,13 @@ func TestCastorBackend_PutObject(t *testing.T) {
 	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-1")
 	defer metaCleanup()
 
+	registerTestDataNode(t, metaClient, "data-1", node1Addr)
+	registerTestDataNode(t, metaClient, "data-2", node2Addr)
+
 	cfg := config.Config{
 		ChunkSize:            4096,
 		WriteQuorum:          2,
 		MaxConcurrentUploads: 4,
-		DataNodes:            []string{node1Addr, node2Addr},
 	}
 
 	engine := storage.New(cfg, metaClient)
@@ -258,11 +273,13 @@ func TestCastorBackend_GetObject(t *testing.T) {
 	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-1")
 	defer metaCleanup()
 
+	registerTestDataNode(t, metaClient, "data-1", node1Addr)
+	registerTestDataNode(t, metaClient, "data-2", node2Addr)
+
 	cfg := config.Config{
 		ChunkSize:            4 << 20,
 		WriteQuorum:          2,
 		MaxConcurrentUploads: 4,
-		DataNodes:            []string{node1Addr, node2Addr},
 	}
 
 	engine := storage.New(cfg, metaClient)
@@ -456,9 +473,6 @@ func TestCastorBackend_GetObject(t *testing.T) {
 }
 
 func TestCastorBackend_CreateBucket(t *testing.T) {
-	nodeAddr, cleanupNode := startTestDataNode(t, "data-cb")
-	defer cleanupNode()
-
 	metaAddr, metaClient, metaCleanup := startTestMetadataNode(t, "meta-cb")
 	defer metaCleanup()
 
@@ -466,7 +480,6 @@ func TestCastorBackend_CreateBucket(t *testing.T) {
 		ChunkSize:            4096,
 		WriteQuorum:          1,
 		MaxConcurrentUploads: 2,
-		DataNodes:            []string{nodeAddr},
 		MetadataAddr:         metaAddr,
 	}
 
@@ -517,9 +530,6 @@ func TestCastorBackend_CreateBucket(t *testing.T) {
 }
 
 func TestCastorBackend_ListBuckets(t *testing.T) {
-	nodeAddr, cleanupNode := startTestDataNode(t, "data-list-b")
-	defer cleanupNode()
-
 	metaAddr, metaClient, metaCleanup := startTestMetadataNode(t, "meta-list-b")
 	defer metaCleanup()
 
@@ -527,7 +537,6 @@ func TestCastorBackend_ListBuckets(t *testing.T) {
 		ChunkSize:            4096,
 		WriteQuorum:          1,
 		MaxConcurrentUploads: 2,
-		DataNodes:            []string{nodeAddr},
 		MetadataAddr:         metaAddr,
 	}
 
@@ -610,11 +619,12 @@ func TestCastorBackend_DeleteBucket(t *testing.T) {
 	metaAddr, metaClient, metaCleanup := startTestMetadataNode(t, "meta-del-b")
 	defer metaCleanup()
 
+	registerTestDataNode(t, metaClient, "data-del-b", nodeAddr)
+
 	cfg := config.Config{
 		ChunkSize:            4096,
 		WriteQuorum:          1,
 		MaxConcurrentUploads: 2,
-		DataNodes:            []string{nodeAddr},
 		MetadataAddr:         metaAddr,
 	}
 
@@ -681,11 +691,12 @@ func TestCastorBackend_DeleteObject(t *testing.T) {
 	metaAddr, metaClient, metaCleanup := startTestMetadataNode(t, "meta-del-obj")
 	defer metaCleanup()
 
+	registerTestDataNode(t, metaClient, "data-del-obj", nodeAddr)
+
 	cfg := config.Config{
 		ChunkSize:            4096,
 		WriteQuorum:          1,
 		MaxConcurrentUploads: 2,
-		DataNodes:            []string{nodeAddr},
 		MetadataAddr:         metaAddr,
 	}
 
@@ -775,11 +786,13 @@ func TestCastorBackend_ListObjectsV2(t *testing.T) {
 	metaAddr, metaClient, metaCleanup := startTestMetadataNode(t, "meta-list-be")
 	defer metaCleanup()
 
+	registerTestDataNode(t, metaClient, "data-list-1", node1Addr)
+	registerTestDataNode(t, metaClient, "data-list-2", node2Addr)
+
 	cfg := config.Config{
 		ChunkSize:            4096,
 		WriteQuorum:          2,
 		MaxConcurrentUploads: 4,
-		DataNodes:            []string{node1Addr, node2Addr},
 		MetadataAddr:         metaAddr,
 	}
 
@@ -938,11 +951,13 @@ func TestCastorBackend_HeadObject(t *testing.T) {
 	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-head-1")
 	defer metaCleanup()
 
+	registerTestDataNode(t, metaClient, "data-head-1", node1Addr)
+	registerTestDataNode(t, metaClient, "data-head-2", node2Addr)
+
 	cfg := config.Config{
 		ChunkSize:            4 << 20,
 		WriteQuorum:          2,
 		MaxConcurrentUploads: 4,
-		DataNodes:            []string{node1Addr, node2Addr},
 	}
 
 	engine := storage.New(cfg, metaClient)
@@ -1049,9 +1064,6 @@ func TestCastorBackend_HeadObject(t *testing.T) {
 }
 
 func TestCastorBackend_GetBucketAcl(t *testing.T) {
-	node1Addr, cleanup1 := startTestDataNode(t, "data-acl-1")
-	defer cleanup1()
-
 	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-acl-1")
 	defer metaCleanup()
 
@@ -1059,7 +1071,6 @@ func TestCastorBackend_GetBucketAcl(t *testing.T) {
 		ChunkSize:            4 << 20,
 		WriteQuorum:          1,
 		MaxConcurrentUploads: 4,
-		DataNodes:            []string{node1Addr},
 	}
 
 	engine := storage.New(cfg, metaClient)
@@ -1116,11 +1127,13 @@ func TestCastorBackend_MultipartUpload(t *testing.T) {
 	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-be-mp")
 	defer metaCleanup()
 
+	registerTestDataNode(t, metaClient, "data-be-mp-1", node1Addr)
+	registerTestDataNode(t, metaClient, "data-be-mp-2", node2Addr)
+
 	cfg := config.Config{
 		ChunkSize:            1024,
 		WriteQuorum:          2,
 		MaxConcurrentUploads: 4,
-		DataNodes:            []string{node1Addr, node2Addr},
 	}
 
 	engine := storage.New(cfg, metaClient)
@@ -1375,5 +1388,52 @@ func TestCastorBackend_Telemetry(t *testing.T) {
 	_, _, err = be.CompleteMultipartUpload(ctx, nil)
 	if err == nil {
 		t.Fatal("expected error for nil complete multipart input")
+	}
+}
+
+type panicReader struct{}
+
+func (p *panicReader) Read(b []byte) (int, error) {
+	panic("reader must not be read when no data nodes are available")
+}
+
+func TestCastorBackend_PutObject_FailFastWhenNoDataNodes(t *testing.T) {
+	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-be-failfast")
+	defer metaCleanup()
+
+	cfg := config.Config{
+		ChunkSize:            4 << 20,
+		WriteQuorum:          2,
+		MaxConcurrentUploads: 4,
+	}
+
+	engine := storage.New(cfg, metaClient)
+	defer engine.Close()
+
+	be := New(engine, metaClient, WithLogger(newTestLogger()))
+	ctx := context.Background()
+
+	bucket := "be-failfast-bucket"
+	if err := be.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: &bucket}, nil); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	key := "failfast.bin"
+	size := int64(5 * 1024 * 1024)
+	_, err := be.PutObject(ctx, s3response.PutObjectInput{
+		Bucket:        &bucket,
+		Key:           &key,
+		Body:          &panicReader{},
+		ContentLength: &size,
+	})
+	if err == nil {
+		t.Fatal("expected error when no data nodes are available, got nil")
+	}
+
+	var apiErr s3err.APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.Code != "ServiceUnavailable" && apiErr.Code != "SlowDown" {
+			t.Fatalf("expected ServiceUnavailable or SlowDown error code, got %s", apiErr.Code)
+		}
 	}
 }

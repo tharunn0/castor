@@ -47,6 +47,10 @@ func TestIntegration_GatewayDynamicSigV4(t *testing.T) {
 	defer metaConn.Close()
 	metaClient := castorv1.NewMetadataServiceClient(metaConn)
 
+	registerTestDataNode(t, metaClient, "data-sigv4-1", node1Addr)
+	registerTestDataNode(t, metaClient, "data-sigv4-2", node2Addr)
+	registerTestDataNode(t, metaClient, "data-sigv4-3", node3Addr)
+
 	activeAccessKey := "AKIAUSER1234567890AB"
 	activeSecretKey := "userSecretKey123456789012345678901234"
 	revokedAccessKey := "AKIAREVOKED123456789A"
@@ -80,7 +84,6 @@ func TestIntegration_GatewayDynamicSigV4(t *testing.T) {
 		S3Addr:               s3Addr,
 		ConsoleAddr:          getFreePort(t),
 		MetadataAddr:         metaAddr,
-		DataNodes:            []string{node1Addr, node2Addr, node3Addr},
 		AuthAddr:             authServer.URL,
 		RootAccessKey:        "admin",
 		RootSecretKey:        "admin123",

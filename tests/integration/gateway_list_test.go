@@ -45,6 +45,10 @@ func TestIntegration_GatewayListObjectsV2(t *testing.T) {
 	defer metaConn.Close()
 	metaClient := castorv1.NewMetadataServiceClient(metaConn)
 
+	registerTestDataNode(t, metaClient, "data-list-1", node1Addr)
+	registerTestDataNode(t, metaClient, "data-list-2", node2Addr)
+	registerTestDataNode(t, metaClient, "data-list-3", node3Addr)
+
 	s3Addr := getFreePort(t)
 	consoleAddr := getFreePort(t)
 
@@ -52,7 +56,6 @@ func TestIntegration_GatewayListObjectsV2(t *testing.T) {
 		S3Addr:               s3Addr,
 		ConsoleAddr:          consoleAddr,
 		MetadataAddr:         metaAddr,
-		DataNodes:            []string{node1Addr, node2Addr, node3Addr},
 		RootAccessKey:        "admin",
 		RootSecretKey:        "admin123",
 		ChunkSize:            int64(MaxChunkSize), // 4MiB system chunk size

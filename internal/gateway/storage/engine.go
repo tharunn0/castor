@@ -123,7 +123,7 @@ func (e *StorageEngine) triggerReadRepair(chunkHash, failedNode string) {
 
 func New(cfg config.Config, metaClient castorv1.MetadataServiceClient) *StorageEngine {
 	pool := NewBufferPool(cfg.ChunkSize, cfg.MaxConcurrentUploads)
-	placement := NewPlacementManager(cfg.DataNodes, cfg.WriteQuorum)
+	placement := NewPlacementManager(cfg.WriteQuorum)
 
 	metaClients := make(map[string]castorv1.MetadataServiceClient)
 	metaConns := make(map[string]*grpc.ClientConn)
@@ -410,6 +410,12 @@ func (e *StorageEngine) PutObject(ctx context.Context, bucket, key, ownerID stri
 		return "", ErrBucketNotFound
 	}
 
+	if size != 0 {
+		if _, err := e.placement.SelectNodesWithContext(ctx, 0); err != nil {
+			return "", err
+		}
+	}
+
 	var chunkIDs []string
 	var placements []*castorv1.ChunkPlacement
 	var totalSize int64
@@ -454,7 +460,7 @@ func (e *StorageEngine) PutObject(ctx context.Context, bucket, key, ownerID stri
 					if exists {
 						dedupedChunks++
 					} else {
-						targets, err := e.placement.SelectNodes(len(e.cfg.DataNodes))
+						targets, err := e.placement.SelectNodesWithContext(ctx, 0)
 						if err != nil {
 							return "", err
 						}
@@ -695,9 +701,15 @@ func (r *chunkStreamReader) readChunkWithFailover(chunkHash string, size int64, 
 		candidateNodes = append(candidateNodes, addr)
 		seen[addr] = struct{}{}
 	}
-	for _, addr := range r.engine.cfg.DataNodes {
+	activeNodes := r.engine.placement.getActiveNodes(r.ctx)
+	for _, node := range activeNodes {
+		addr := node.GetGrpcAddress()
+		if addr == "" || node.GetStatus() == castorv1.NodeStatus_NODE_STATUS_OFFLINE {
+			continue
+		}
 		if _, ok := seen[addr]; !ok {
 			candidateNodes = append(candidateNodes, addr)
+			seen[addr] = struct{}{}
 		}
 	}
 
@@ -989,6 +1001,12 @@ func (e *StorageEngine) UploadPart(ctx context.Context, bucket, key, uploadID st
 		return "", errors.New("part_number must be greater than zero")
 	}
 
+	if size != 0 {
+		if _, err := e.placement.SelectNodesWithContext(ctx, 0); err != nil {
+			return "", err
+		}
+	}
+
 	var chunkIDs []string
 	var placements []*castorv1.ChunkPlacement
 	var totalSize int64
@@ -1035,7 +1053,7 @@ func (e *StorageEngine) UploadPart(ctx context.Context, bucket, key, uploadID st
 					if exists {
 						dedupedChunks++
 					} else {
-						targets, err := e.placement.SelectNodes(len(e.cfg.DataNodes))
+						targets, err := e.placement.SelectNodesWithContext(ctx, 0)
 						if err != nil {
 							return "", err
 						}

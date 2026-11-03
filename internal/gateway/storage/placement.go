@@ -9,7 +9,6 @@ import (
 	"io"
 	"sort"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
@@ -44,20 +43,17 @@ func WithActiveNodeCacheTTL(ttl time.Duration) PlacementOption {
 // PlacementManager manages and interacts with data nodes
 type PlacementManager struct {
 	mu                 sync.RWMutex
-	nodeAddrs          []string
 	writeQuorum        int
 	clients            map[string]castorv1.DataServiceClient
 	conns              map[string]*grpc.ClientConn
-	rr                 atomic.Uint64
 	activeNodeProvider ActiveNodeProvider
 	cachedNodes        []*castorv1.NodeCapacity
 	cacheExpiry        time.Time
 	cacheTTL           time.Duration
 }
 
-func NewPlacementManager(nodes []string, writeQuorum int, opts ...PlacementOption) *PlacementManager {
+func NewPlacementManager(writeQuorum int, opts ...PlacementOption) *PlacementManager {
 	m := &PlacementManager{
-		nodeAddrs:   append([]string(nil), nodes...),
 		writeQuorum: writeQuorum,
 		clients:     make(map[string]castorv1.DataServiceClient),
 		conns:       make(map[string]*grpc.ClientConn),
@@ -117,6 +113,9 @@ func (m *PlacementManager) getActiveNodes(ctx context.Context) []*castorv1.NodeC
 
 func (m *PlacementManager) SelectNodesWithContext(ctx context.Context, count int) ([]string, error) {
 	activeNodes := m.getActiveNodes(ctx)
+	if len(activeNodes) == 0 {
+		return nil, ErrNoNodes
+	}
 
 	var candidates []*castorv1.NodeCapacity
 	for _, node := range activeNodes {
@@ -133,71 +132,49 @@ func (m *PlacementManager) SelectNodesWithContext(ctx context.Context, count int
 		candidates = append(candidates, node)
 	}
 
-	if len(candidates) >= m.writeQuorum {
-		var healthy []*castorv1.NodeCapacity
-		var degraded []*castorv1.NodeCapacity
-		for _, node := range candidates {
-			if node.GetStatus() == castorv1.NodeStatus_NODE_STATUS_HEALTHY {
-				healthy = append(healthy, node)
-			} else {
-				degraded = append(degraded, node)
-			}
-		}
-
-		sort.SliceStable(healthy, func(i, j int) bool {
-			return healthy[i].GetFreeBytes() > healthy[j].GetFreeBytes()
-		})
-		sort.SliceStable(degraded, func(i, j int) bool {
-			return degraded[i].GetFreeBytes() > degraded[j].GetFreeBytes()
-		})
-
-		sorted := append(healthy, degraded...)
-
-		target := count
-		if target <= 0 || target > len(sorted) {
-			target = len(sorted)
-		}
-		if target < m.writeQuorum {
-			return nil, ErrQuorumNotMet
-		}
-
-		selected := make([]string, target)
-		for i := range target {
-			selected[i] = sorted[i].GetGrpcAddress()
-		}
-		return selected, nil
-	}
-
-	return m.selectStaticNodes(count)
-}
-
-func (m *PlacementManager) SelectNodes(count int) ([]string, error) {
-	return m.SelectNodesWithContext(context.Background(), count)
-}
-
-func (m *PlacementManager) selectStaticNodes(count int) ([]string, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	n := len(m.nodeAddrs)
-	if n == 0 {
+	if len(candidates) == 0 {
 		return nil, ErrNoNodes
 	}
+	if len(candidates) < m.writeQuorum {
+		return nil, ErrQuorumNotMet
+	}
+
+	var healthy []*castorv1.NodeCapacity
+	var degraded []*castorv1.NodeCapacity
+	for _, node := range candidates {
+		if node.GetStatus() == castorv1.NodeStatus_NODE_STATUS_HEALTHY {
+			healthy = append(healthy, node)
+		} else {
+			degraded = append(degraded, node)
+		}
+	}
+
+	sort.SliceStable(healthy, func(i, j int) bool {
+		return healthy[i].GetFreeBytes() > healthy[j].GetFreeBytes()
+	})
+	sort.SliceStable(degraded, func(i, j int) bool {
+		return degraded[i].GetFreeBytes() > degraded[j].GetFreeBytes()
+	})
+
+	sorted := append(healthy, degraded...)
 
 	target := count
-	if target <= 0 || target > n {
-		target = n
+	if target <= 0 || target > len(sorted) {
+		target = len(sorted)
 	}
 	if target < m.writeQuorum {
 		return nil, ErrQuorumNotMet
 	}
 
-	start := int((m.rr.Add(1) - 1) % uint64(n))
 	selected := make([]string, target)
 	for i := range target {
-		selected[i] = m.nodeAddrs[(start+i)%n]
+		selected[i] = sorted[i].GetGrpcAddress()
 	}
 	return selected, nil
+}
+
+func (m *PlacementManager) SelectNodes(count int) ([]string, error) {
+	return m.SelectNodesWithContext(context.Background(), count)
 }
 
 func (m *PlacementManager) WriteChunkQuorum(ctx context.Context, chunkHash string, data []byte, targets []string) ([]string, error) {

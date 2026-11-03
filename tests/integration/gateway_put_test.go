@@ -39,12 +39,15 @@ func TestIntegration_GatewayPutObject(t *testing.T) {
 	defer metaConn.Close()
 	metaClient := castorv1.NewMetadataServiceClient(metaConn)
 
+	registerTestDataNode(t, metaClient, "data-1", node1Addr)
+	registerTestDataNode(t, metaClient, "data-2", node2Addr)
+	registerTestDataNode(t, metaClient, "data-3", node3Addr)
+
 	const testChunkSize = 2 << 20 // 2MB chunk size for testing multi-chunking
 	cfg := gwconfig.Config{
 		ChunkSize:            testChunkSize,
 		WriteQuorum:          2,
 		MaxConcurrentUploads: 4,
-		DataNodes:            []string{node1Addr, node2Addr, node3Addr},
 	}
 
 	engine := gwstorage.New(cfg, metaClient)
