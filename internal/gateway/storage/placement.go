@@ -18,8 +18,9 @@ import (
 )
 
 var (
-	ErrQuorumNotMet = errors.New("storage: write quorum not satisfied")
-	ErrNoNodes      = errors.New("storage: no storage nodes available")
+	ErrQuorumNotMet     = errors.New("storage: write quorum not satisfied")
+	ErrNoNodes          = errors.New("storage: no storage nodes available")
+	ErrChecksumMismatch = errors.New("storage: chunk checksum mismatch")
 )
 
 type ActiveNodeProvider func(ctx context.Context) ([]*castorv1.NodeCapacity, error)
@@ -301,8 +302,9 @@ func (m *PlacementManager) ReadChunkFromNode(ctx context.Context, nodeAddr strin
 	}
 
 	sum := sha256.Sum256(buf)
-	if hex.EncodeToString(sum[:]) != chunkHash {
-		return nil, fmt.Errorf("chunk checksum mismatch: expected %s, got %s", chunkHash, hex.EncodeToString(sum[:]))
+	actualHash := hex.EncodeToString(sum[:])
+	if actualHash != chunkHash {
+		return nil, fmt.Errorf("%w: expected %s, got %s", ErrChecksumMismatch, chunkHash, actualHash)
 	}
 	if int(length) <= len(buf) {
 		return buf[:length], nil

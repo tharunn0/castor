@@ -114,14 +114,14 @@ func (e *StorageEngine) triggerReadRepair(chunkHash, failedNode string) {
 			return err
 		})
 		if err != nil {
-			e.logger.Debug("failed to trigger read repair",
+			e.logger.Warn("failed to trigger read repair",
 				"chunk_hash", chunkHash,
 				"failed_node", failedNode,
 				"error", err,
 			)
 			return
 		}
-		e.logger.Debug("triggered passive read repair",
+		e.logger.Info("triggered passive read repair",
 			"chunk_hash", chunkHash,
 			"failed_node", failedNode,
 		)
@@ -720,6 +720,7 @@ func (r *chunkStreamReader) readChunkWithFailover(chunkHash string, size int64, 
 			}
 			return data, nil
 		}
+		r.recordReadFailure(nodeAddr, chunkHash, err)
 		failedNodes = append(failedNodes, nodeAddr)
 		lastErr = err
 	}
@@ -742,6 +743,7 @@ func (r *chunkStreamReader) readChunkWithFailover(chunkHash string, size int64, 
 			}
 			return data, nil
 		}
+		r.recordReadFailure(addr, chunkHash, err)
 		failedNodes = append(failedNodes, addr)
 		lastErr = err
 	}
@@ -750,6 +752,41 @@ func (r *chunkStreamReader) readChunkWithFailover(chunkHash string, size int64, 
 		return nil, fmt.Errorf("chunk %s read failed across all replicas: %w", chunkHash, lastErr)
 	}
 	return nil, fmt.Errorf("no replica nodes available for chunk %s", chunkHash)
+}
+
+func (r *chunkStreamReader) recordReadFailure(nodeAddr, chunkHash string, err error) {
+	isCorruption := errors.Is(err, ErrChecksumMismatch)
+	reason := "read_error"
+	if isCorruption {
+		reason = "checksum_mismatch"
+	}
+
+	if r.engine == nil {
+		return
+	}
+
+	if isCorruption {
+		r.engine.logger.WarnContext(r.ctx, "chunk checksum verification failed, failing over to next replica",
+			"chunk_hash", chunkHash,
+			"node_address", nodeAddr,
+			"error", err,
+		)
+	} else {
+		r.engine.logger.WarnContext(r.ctx, "chunk read failed, failing over to next replica",
+			"chunk_hash", chunkHash,
+			"node_address", nodeAddr,
+			"error", err,
+		)
+	}
+
+	if r.engine.metrics != nil {
+		if isCorruption && r.engine.metrics.ChunkCorruptionsTotal != nil {
+			r.engine.metrics.ChunkCorruptionsTotal.WithLabelValues(nodeAddr).Inc()
+		}
+		if r.engine.metrics.ReadFailoversTotal != nil {
+			r.engine.metrics.ReadFailoversTotal.WithLabelValues(nodeAddr, reason).Inc()
+		}
+	}
 }
 
 func (r *chunkStreamReader) Close() error {

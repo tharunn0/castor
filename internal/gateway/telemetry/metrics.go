@@ -7,10 +7,12 @@ import (
 
 // GatewayMetrics holds Prometheus metric collectors specific to gateway-svc operations.
 type GatewayMetrics struct {
-	RequestsTotal   *prometheus.CounterVec
-	RequestDuration *prometheus.HistogramVec
-	BufferPoolInUse prometheus.Gauge
-	ActiveUploads   prometheus.Gauge
+	RequestsTotal         *prometheus.CounterVec
+	RequestDuration       *prometheus.HistogramVec
+	BufferPoolInUse       prometheus.Gauge
+	ActiveUploads         prometheus.Gauge
+	ChunkCorruptionsTotal *prometheus.CounterVec
+	ReadFailoversTotal    *prometheus.CounterVec
 }
 
 // NewGatewayMetrics initializes and registers gateway-specific Prometheus metrics
@@ -48,6 +50,22 @@ func NewGatewayMetrics(telMetrics *telemetry.Metrics) *GatewayMetrics {
 				Help:      "Number of currently active in-flight upload operations",
 			},
 		),
+		ChunkCorruptionsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "s3",
+				Name:      "chunk_corruptions_total",
+				Help:      "Total count of chunk checksum verification failures detected during reads",
+			},
+			[]string{"node_address"},
+		),
+		ReadFailoversTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "s3",
+				Name:      "read_failovers_total",
+				Help:      "Total count of chunk read failovers partitioned by node and failure reason",
+			},
+			[]string{"node_address", "reason"},
+		),
 	}
 
 	collectors := []prometheus.Collector{
@@ -55,6 +73,8 @@ func NewGatewayMetrics(telMetrics *telemetry.Metrics) *GatewayMetrics {
 		m.RequestDuration,
 		m.BufferPoolInUse,
 		m.ActiveUploads,
+		m.ChunkCorruptionsTotal,
+		m.ReadFailoversTotal,
 	}
 
 	if telMetrics != nil {

@@ -21,6 +21,8 @@ func TestGatewayMetrics_Registration(t *testing.T) {
 	gwMetrics.BufferPoolInUse.Set(4 * 1024 * 1024)
 	gwMetrics.ActiveUploads.Inc()
 	gwMetrics.ActiveUploads.Dec()
+	gwMetrics.ChunkCorruptionsTotal.WithLabelValues("127.0.0.1:9000").Inc()
+	gwMetrics.ReadFailoversTotal.WithLabelValues("127.0.0.1:9000", "checksum_mismatch").Inc()
 
 	// Registration on a fresh standalone registry
 	standaloneMetrics := NewGatewayMetrics(&telemetry.Metrics{Registry: prometheus.NewRegistry()})

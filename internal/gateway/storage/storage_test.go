@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -17,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
 	"github.com/tharunn0/castor/internal/gateway/config"
 	gwtelemetry "github.com/tharunn0/castor/internal/gateway/telemetry"
@@ -1535,5 +1538,148 @@ func TestStorageEngine_ReplicaShuffling(t *testing.T) {
 
 	if !repairedA || !repairedB {
 		t.Fatalf("expected both %s and %s to be repaired, got repairedA=%v, repairedB=%v", failedNodeA, failedNodeB, repairedA, repairedB)
+	}
+}
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (n int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+func TestStorageEngine_ReadChecksumMismatch_LoggingAndMetrics(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+	node1Addr, cleanup1 := startTestDataNodeWithDir(t, "data-c1", dir1)
+	defer cleanup1()
+	node2Addr, cleanup2 := startTestDataNodeWithDir(t, "data-c2", dir2)
+	defer cleanup2()
+
+	_, metaClient, metaCleanup := startTestMetadataNode(t, "meta-corrupt")
+	defer metaCleanup()
+
+	registerTestDataNode(t, metaClient, "data-c1", node1Addr)
+	registerTestDataNode(t, metaClient, "data-c2", node2Addr)
+
+	reg := prometheus.NewRegistry()
+	gwMetrics := gwtelemetry.NewGatewayMetrics(&telemetry.Metrics{Registry: reg})
+
+	var logBuf syncBuffer
+	testLogger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	cfg := config.Config{
+		ChunkSize:            4 << 20,
+		WriteQuorum:          2,
+		MaxConcurrentUploads: 4,
+	}
+
+	engine := New(cfg, metaClient).WithMetrics(gwMetrics).WithLogger(testLogger)
+	defer engine.Close()
+
+	ctx := context.Background()
+	bucket := "corrupt-bucket"
+	if err := engine.CreateBucket(ctx, bucket, "admin", nil); err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	payload := make([]byte, (4<<20)+512*1024)
+	for i := range payload {
+		payload[i] = byte(i % 233)
+	}
+
+	_, err := engine.PutObject(ctx, bucket, "test.bin", "admin", bytes.NewReader(payload), int64(len(payload)))
+	if err != nil {
+		t.Fatalf("failed to put object: %v", err)
+	}
+
+	manifest, err := engine.GetManifest(ctx, bucket, "test.bin")
+	if err != nil {
+		t.Fatalf("failed to get manifest: %v", err)
+	}
+	if len(manifest.GetChunks()) == 0 {
+		t.Fatal("expected at least one chunk in manifest")
+	}
+	chunk0Hash := manifest.GetChunks()[0].GetChunkHash()
+
+	// Corrupt chunk 0 file on node1
+	chunkFile := filepath.Join(dir1, "chunk", chunk0Hash[:2], chunk0Hash)
+	if err := os.WriteFile(chunkFile, []byte("bad-chunk-bytes-corrupted"), 0644); err != nil {
+		t.Fatalf("failed to corrupt chunk file on node 1: %v", err)
+	}
+
+	// Deterministic shuffler ensuring node1 is attempted first for chunk reads
+	engine.WithReplicaShuffler(func(nodes []string) {
+		for i, n := range nodes {
+			if n == node1Addr {
+				nodes[i], nodes[0] = nodes[0], nodes[i]
+				break
+			}
+		}
+	})
+
+	repairCh := make(chan string, 5)
+	engine.WithReadRepairHook(func(chunkHash, failedNode string) {
+		repairCh <- failedNode
+	})
+
+	rc, _, err := engine.GetObject(ctx, bucket, "test.bin")
+	if err != nil {
+		t.Fatalf("failed to get object: %v", err)
+	}
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("failed to read object: %v", err)
+	}
+	if !bytes.Equal(data, payload) {
+		t.Fatal("read data does not match payload despite replica failover")
+	}
+
+	// 1. Verify WARN log emitted
+	logStr := logBuf.String()
+	if !strings.Contains(logStr, `"level":"WARN"`) {
+		t.Fatalf("expected WARN log on checksum failure, got: %s", logStr)
+	}
+	if !strings.Contains(logStr, "chunk checksum verification failed, failing over to next replica") {
+		t.Fatalf("expected failover message in log, got: %s", logStr)
+	}
+	if !strings.Contains(logStr, chunk0Hash) {
+		t.Fatalf("expected chunk hash %s in log, got: %s", chunk0Hash, logStr)
+	}
+	if !strings.Contains(logStr, node1Addr) {
+		t.Fatalf("expected node address %s in log, got: %s", node1Addr, logStr)
+	}
+
+	// 2. Verify metrics incremented
+	corruptCount := testutil.ToFloat64(gwMetrics.ChunkCorruptionsTotal.WithLabelValues(node1Addr))
+	if corruptCount != 1 {
+		t.Fatalf("expected ChunkCorruptionsTotal=1 for %s, got %f", node1Addr, corruptCount)
+	}
+
+	failoverCount := testutil.ToFloat64(gwMetrics.ReadFailoversTotal.WithLabelValues(node1Addr, "checksum_mismatch"))
+	if failoverCount != 1 {
+		t.Fatalf("expected ReadFailoversTotal=1 for %s with reason checksum_mismatch, got %f", node1Addr, failoverCount)
+	}
+
+	// 3. Verify passive read repair triggered for corrupt node
+	select {
+	case repairedNode := <-repairCh:
+		if repairedNode != node1Addr {
+			t.Fatalf("expected read repair triggered for %s, got %s", node1Addr, repairedNode)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for read repair hook")
 	}
 }

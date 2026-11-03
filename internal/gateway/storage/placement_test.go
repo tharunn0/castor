@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
@@ -16,9 +18,12 @@ import (
 )
 
 func startTestDataNode(t *testing.T, nodeID string) (string, func()) {
+	return startTestDataNodeWithDir(t, nodeID, t.TempDir())
+}
+
+func startTestDataNodeWithDir(t *testing.T, nodeID string, tmpDir string) (string, func()) {
 	t.Helper()
 
-	tmpDir := t.TempDir()
 	casStore, err := datastorage.New(tmpDir, 4<<20)
 	if err != nil {
 		t.Fatalf("[%s] failed to initialize CAS storage: %v", nodeID, err)
@@ -260,5 +265,42 @@ func TestPlacement_QuorumEnforcement(t *testing.T) {
 	_, err := pm.SelectNodes(2)
 	if !errors.Is(err, ErrQuorumNotMet) {
 		t.Fatalf("expected ErrQuorumNotMet, got %v", err)
+	}
+}
+
+func TestPlacementReadChunkChecksumMismatch(t *testing.T) {
+	dataDir := t.TempDir()
+	addr1, cleanup1 := startTestDataNodeWithDir(t, "node-corrupt", dataDir)
+	defer cleanup1()
+
+	provider := func(ctx context.Context) ([]*castorv1.NodeCapacity, error) {
+		return []*castorv1.NodeCapacity{
+			{NodeId: "node-corrupt", GrpcAddress: addr1, FreeBytes: 100 << 30, Status: castorv1.NodeStatus_NODE_STATUS_HEALTHY},
+		}, nil
+	}
+
+	pm := NewPlacementManager(1, WithActiveNodeProvider(provider))
+	defer pm.Close()
+
+	ctx := context.Background()
+	payload := []byte("clean-content")
+	hash := computeSHA256(payload)
+
+	_, err := pm.WriteChunkQuorum(ctx, hash, payload, []string{addr1})
+	if err != nil {
+		t.Fatalf("WriteChunkQuorum failed: %v", err)
+	}
+
+	chunkFile := filepath.Join(dataDir, "chunk", hash[:2], hash)
+	if err := os.WriteFile(chunkFile, []byte("tampered-content"), 0644); err != nil {
+		t.Fatalf("failed to corrupt chunk file on disk: %v", err)
+	}
+
+	_, err = pm.ReadChunkFromNode(ctx, addr1, hash, int64(len(payload)))
+	if err == nil {
+		t.Fatal("expected checksum error on corrupt chunk, got nil")
+	}
+	if !errors.Is(err, ErrChecksumMismatch) {
+		t.Fatalf("expected ErrChecksumMismatch, got %v", err)
 	}
 }
