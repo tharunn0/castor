@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
@@ -26,15 +27,22 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		os.Exit(1)
+	}
+}
 
+func run() error {
 	ctx := context.Background()
 	tel, err := telemetry.Init(ctx, "gateway-svc")
 	if err != nil {
 		slog.Error("failed to initialize telemetry", "error", err)
-		os.Exit(1)
+		return err
 	}
 	defer func() {
-		_ = tel.Shutdown(context.Background())
+		if err := tel.ShutdownWithTimeout(5 * time.Second); err != nil {
+			slog.Error("telemetry shutdown failed", "error", err)
+		}
 	}()
 
 	logger := tel.Logger
@@ -57,7 +65,7 @@ func main() {
 	)
 	if err != nil {
 		logger.Error("failed to connect to metadata service", "error", err, "addr", cfg.MetadataAddr)
-		os.Exit(1)
+		return err
 	}
 	defer func() {
 		if err := metaConn.Close(); err != nil {
@@ -133,14 +141,19 @@ func main() {
 	shutdownChan := make(chan os.Signal, 1)
 	signal.Notify(shutdownChan, os.Interrupt, syscall.SIGTERM)
 
+	var serveErr error
 	select {
 	case sig := <-shutdownChan:
 		logger.Info("shutting down gateway service", "signal", sig.String())
-	case err := <-gwErrChan:
-		logger.Error("gateway S3 server error", "error", err)
+	case serveErr = <-gwErrChan:
+		logger.Error("gateway S3 server error", "error", serveErr)
 	}
 
 	cancel()
 	_ = healthApp.Shutdown()
+	if serveErr != nil {
+		return serveErr
+	}
 	logger.Info("gateway service stopped cleanly")
+	return nil
 }

@@ -20,7 +20,7 @@ func TestLoadConfig_Baselines(t *testing.T) {
 	}{
 		{EnvDev, EnvDev, slog.LevelDebug, LogFormatText, true, true, true, true, false},
 		{EnvStage, EnvStage, slog.LevelInfo, LogFormatJSON, true, true, true, true, true},
-		{EnvProd, EnvProd, slog.LevelInfo, LogFormatJSON, true, true, false, false, true},
+		{EnvProd, EnvProd, slog.LevelInfo, LogFormatJSON, true, true, true, false, true},
 		{EnvTest, EnvTest, slog.LevelError, LogFormatText, false, true, false, false, false},
 		{EnvOff, EnvOff, slog.LevelError, LogFormatText, false, false, false, false, false},
 	}
@@ -176,4 +176,13 @@ func TestTelemetry_WithConfigOverrides(t *testing.T) {
 		t.Error("expected non-recording span when tracing disabled")
 	}
 	span.End()
+}
+
+func TestLoadConfig_ProdLogStdoutCanBeDisabled(t *testing.T) {
+	t.Setenv("LOG_STDOUT_ENABLED", "false")
+
+	cfg := LoadConfig("svc", EnvProd)
+	if cfg.LogStdoutEnabled {
+		t.Errorf("LogStdoutEnabled with LOG_STDOUT_ENABLED=false = %v, want false", cfg.LogStdoutEnabled)
+	}
 }

@@ -24,22 +24,30 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	_ = godotenv.Load()
 	ctx := context.Background()
 	tel, err := telemetry.Init(ctx, "auth-svc")
 	if err != nil {
 		slog.Error("failed to initialize telemetry", "error", err)
-		os.Exit(1)
+		return err
 	}
 	defer func() {
-		_ = tel.Shutdown(context.Background())
+		if err := tel.ShutdownWithTimeout(5 * time.Second); err != nil {
+			slog.Error("telemetry shutdown failed", "error", err)
+		}
 	}()
 
 	logger := tel.Logger
 	cfg, err := config.Load()
 	if err != nil {
 		logger.Error("failed to load configuration", "error", err)
-		os.Exit(1)
+		return err
 	}
 
 	logger.Info("starting auth service",
@@ -53,7 +61,7 @@ func main() {
 	)
 	if err != nil {
 		logger.Error("failed to initialize postgres pool", "error", err)
-		os.Exit(1)
+		return err
 	}
 	defer pool.Close()
 
@@ -100,4 +108,5 @@ func main() {
 		logger.Error("error shutting down auth server", "error", err)
 	}
 	logger.Info("auth service stopped cleanly")
+	return nil
 }

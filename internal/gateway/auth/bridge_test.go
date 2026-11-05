@@ -1,9 +1,12 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -163,5 +166,39 @@ func TestBridge_UnsupportedMethods(t *testing.T) {
 
 	if err := bridge.Shutdown(); err != nil {
 		t.Fatalf("expected Shutdown to return nil, got %v", err)
+	}
+}
+
+func TestBridge_GetUserAccountDoesNotLogSecret(t *testing.T) {
+	for _, secret := range []string{"Zq9", "userSecretKey456789"} {
+		t.Run("secret_len_"+strconv.Itoa(len(secret)), func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			mock := &mockClient{
+				validateKeyFunc: func(ctx context.Context, accessKeyID string) (*ValidateKeyResponse, error) {
+					return &ValidateKeyResponse{
+						AccessKeyID:     accessKeyID,
+						SecretAccessKey: secret,
+						UserID:          "usr-1",
+						Status:          StatusActive,
+					}, nil
+				},
+			}
+			bridge := NewBridge(mock, "", "", logger)
+
+			acc, err := bridge.GetUserAccount("AKIAACTIVEUSER123456")
+			if err != nil {
+				t.Fatalf("GetUserAccount() error = %v", err)
+			}
+			if acc.Secret != secret {
+				t.Fatalf("Secret = %q, want %q", acc.Secret, secret)
+			}
+			if buf.Len() == 0 {
+				t.Fatal("expected debug logs to be written")
+			}
+			if strings.Contains(buf.String(), secret) {
+				t.Errorf("log output contains the secret key: %s", buf.String())
+			}
+		})
 	}
 }

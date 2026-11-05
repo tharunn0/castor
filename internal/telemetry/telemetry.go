@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -24,6 +25,14 @@ type Telemetry struct {
 	Tracer         trace.Tracer
 	Metrics        *Metrics
 	Shutdown       func(context.Context) error
+}
+
+// ShutdownWithTimeout flushes and stops the exporters, bounded so a dead
+// collector cannot block process exit.
+func (t *Telemetry) ShutdownWithTimeout(timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return t.Shutdown(ctx)
 }
 
 func NewTracerProviderWithConfig(ctx context.Context, cfg Config) (trace.TracerProvider, func(context.Context) error, error) {

@@ -27,14 +27,22 @@ import (
 const maxChunkSize = 4 << 20
 
 func main() {
+	if err := run(); err != nil {
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	ctx := context.Background()
 	tel, err := telemetry.Init(ctx, "data-svc")
 	if err != nil {
 		slog.Error("failed to initialize telemetry", "error", err)
-		os.Exit(1)
+		return err
 	}
 	defer func() {
-		_ = tel.Shutdown(context.Background())
+		if err := tel.ShutdownWithTimeout(5 * time.Second); err != nil {
+			slog.Error("telemetry shutdown failed", "error", err)
+		}
 	}()
 
 	logger := tel.Logger
@@ -54,7 +62,7 @@ func main() {
 	lis, err := net.Listen("tcp", cfg.GRPCAddr)
 	if err != nil {
 		logger.Error("failed to bind gRPC port", "error", err, "addr", cfg.GRPCAddr)
-		os.Exit(1)
+		return err
 	}
 
 	store, err := storage.New(cfg.DataDir, maxChunkSize,
@@ -63,7 +71,7 @@ func main() {
 	)
 	if err != nil {
 		logger.Error("failed to initialize storage", "error", err, "dir", cfg.DataDir)
-		os.Exit(1)
+		return err
 	}
 
 	_ = store.UpdateCapacityMetrics(dataMetrics)
@@ -114,11 +122,12 @@ func main() {
 		}
 	}()
 
+	var serveErr error
 	select {
 	case sig := <-shutdownChan:
 		logger.Info("shutting down data service", "signal", sig.String())
-	case err := <-serverErrChan:
-		logger.Error("data gRPC server error", "error", err)
+	case serveErr = <-serverErrChan:
+		logger.Error("data gRPC server error", "error", serveErr)
 	}
 
 	_ = syncer.Stop()
@@ -130,5 +139,9 @@ func main() {
 		logger.Error("metrics HTTP server shutdown failed", "error", err)
 	}
 
+	if serveErr != nil {
+		return serveErr
+	}
 	logger.Info("data service stopped cleanly")
+	return nil
 }

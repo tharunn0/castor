@@ -18,6 +18,7 @@ services:
       - RAFT_LOG_OUTPUT=discard
       - APP_ENV=${APP_ENV:-dev}
       - TRACE_OTLP_ENABLED=${TRACE_OTLP_ENABLED:-true}
+      - TRACE_STDOUT_ENABLED=${TRACE_STDOUT_ENABLED:-false}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
     ports:
       - "${METADATA_1_PORT:-9090}:9090"
@@ -49,6 +50,7 @@ services:
       - RAFT_LOG_OUTPUT=discard
       - APP_ENV=${APP_ENV:-dev}
       - TRACE_OTLP_ENABLED=${TRACE_OTLP_ENABLED:-true}
+      - TRACE_STDOUT_ENABLED=${TRACE_STDOUT_ENABLED:-false}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
     ports:
       - "${METADATA_2_PORT:-9092}:9090"
@@ -80,6 +82,7 @@ services:
       - RAFT_LOG_OUTPUT=discard
       - APP_ENV=${APP_ENV:-dev}
       - TRACE_OTLP_ENABLED=${TRACE_OTLP_ENABLED:-true}
+      - TRACE_STDOUT_ENABLED=${TRACE_STDOUT_ENABLED:-false}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
     ports:
       - "${METADATA_3_PORT:-9094}:9090"
@@ -111,6 +114,7 @@ services:
       - DATA_DIR=${DATA_1_DATA_DIR:-/data}
       - APP_ENV=${APP_ENV:-dev}
       - TRACE_OTLP_ENABLED=${TRACE_OTLP_ENABLED:-true}
+      - TRACE_STDOUT_ENABLED=${TRACE_STDOUT_ENABLED:-false}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
     ports:
       - "${DATA_1_PORT:-9101}:9101"
@@ -141,6 +145,7 @@ services:
       - DATA_DIR=${DATA_2_DATA_DIR:-/data}
       - APP_ENV=${APP_ENV:-dev}
       - TRACE_OTLP_ENABLED=${TRACE_OTLP_ENABLED:-true}
+      - TRACE_STDOUT_ENABLED=${TRACE_STDOUT_ENABLED:-false}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
     ports:
       - "${DATA_2_PORT:-9102}:9101"
@@ -171,6 +176,7 @@ services:
       - DATA_DIR=${DATA_3_DATA_DIR:-/data}
       - APP_ENV=${APP_ENV:-dev}
       - TRACE_OTLP_ENABLED=${TRACE_OTLP_ENABLED:-true}
+      - TRACE_STDOUT_ENABLED=${TRACE_STDOUT_ENABLED:-false}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
     ports:
       - "${DATA_3_PORT:-9103}:9101"
@@ -206,6 +212,7 @@ services:
       - MAX_CONCURRENT_UPLOADS=${MAX_CONCURRENT_UPLOADS:-64}
       - APP_ENV=${APP_ENV:-dev}
       - TRACE_OTLP_ENABLED=${TRACE_OTLP_ENABLED:-true}
+      - TRACE_STDOUT_ENABLED=${TRACE_STDOUT_ENABLED:-false}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
     ports:
       - "${S3_PORT:-9000}:9000"
@@ -256,6 +263,7 @@ services:
     environment:
       - APP_ENV=${APP_ENV:-dev}
       - TRACE_OTLP_ENABLED=${TRACE_OTLP_ENABLED:-true}
+      - TRACE_STDOUT_ENABLED=${TRACE_STDOUT_ENABLED:-false}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
       - AUTH_HTTP_ADDR=${AUTH_HTTP_ADDR:-:9095}
       - AUTH_READ_TIMEOUT=${AUTH_READ_TIMEOUT:-10s}

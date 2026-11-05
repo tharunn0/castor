@@ -55,7 +55,6 @@ func (b *Bridge) GetUserAccount(access string) (gwauth.Account, error) {
 	}
 	b.logger.Debug("[Gateway-Auth: GetUserAccount Response]",
 		"access key", resp.AccessKeyID,
-		"secret key", resp.SecretAccessKey[:5],
 		"user_id", resp.UserID,
 	)
 	return gwauth.Account{

@@ -26,14 +26,22 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	ctx := context.Background()
 	tel, err := telemetry.Init(ctx, "metadata-svc")
 	if err != nil {
 		slog.Error("failed to initialize telemetry", "error", err)
-		os.Exit(1)
+		return err
 	}
 	defer func() {
-		_ = tel.Shutdown(context.Background())
+		if err := tel.ShutdownWithTimeout(5 * time.Second); err != nil {
+			slog.Error("telemetry shutdown failed", "error", err)
+		}
 	}()
 
 	logger := tel.Logger
@@ -56,7 +64,7 @@ func main() {
 	dbStore, err := store.Open(badgerDir, false)
 	if err != nil {
 		logger.Error("failed to open metadata store", "error", err, "path", badgerDir)
-		os.Exit(1)
+		return err
 	}
 
 	fsm := consensus.NewFSM(dbStore, logger)
@@ -68,7 +76,7 @@ func main() {
 	if err != nil {
 		logger.Error("failed to initialize raft node", "error", err)
 		_ = dbStore.Close()
-		os.Exit(1)
+		return err
 	}
 
 	nodeRegistry := registry.New()
@@ -99,7 +107,7 @@ func main() {
 		logger.Error("failed to start leader coordinator", "error", err)
 		_ = raftNode.Shutdown()
 		_ = dbStore.Close()
-		os.Exit(1)
+		return err
 	}
 
 	metaServer := server.New(dbStore, raftNode,
@@ -118,7 +126,7 @@ func main() {
 		_ = coordinator.Stop()
 		_ = raftNode.Shutdown()
 		_ = dbStore.Close()
-		os.Exit(1)
+		return err
 	}
 
 	metricsMux := http.NewServeMux()
@@ -151,11 +159,12 @@ func main() {
 		}
 	}()
 
+	var serveErr error
 	select {
 	case sig := <-shutdownChan:
 		logger.Info("shutting down metadata service", "signal", sig.String())
-	case err := <-serverErrChan:
-		logger.Error("metadata gRPC server error", "error", err)
+	case serveErr = <-serverErrChan:
+		logger.Error("metadata gRPC server error", "error", serveErr)
 	}
 
 	grpcServer.GracefulStop()
@@ -175,5 +184,9 @@ func main() {
 		logger.Error("error closing metadata store", "error", err)
 	}
 
+	if serveErr != nil {
+		return serveErr
+	}
 	logger.Info("metadata service stopped cleanly")
+	return nil
 }

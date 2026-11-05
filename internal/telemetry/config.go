@@ -154,7 +154,7 @@ func defaultConfigForEnv(env string) Config {
 			LogLevel:           slog.LevelInfo,
 			LogFormat:          LogFormatJSON,
 			LogAddSource:       false,
-			LogStdoutEnabled:   false,
+			LogStdoutEnabled:   true,
 			TracingEnabled:     true,
 			TraceStdoutEnabled: false,
 			TraceOTLPEnabled:   true,

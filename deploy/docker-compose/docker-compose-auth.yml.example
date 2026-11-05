@@ -49,7 +49,7 @@ services:
       - LOG_ADD_SOURCE=${LOG_ADD_SOURCE:-false} # true, false
       - LOG_STDOUT_ENABLED=${LOG_STDOUT_ENABLED:-true} # true, false
       - TRACING_ENABLED=${TRACING_ENABLED:-true} # true, false
-      - TRACE_STDOUT_ENABLED=${TRACE_STDOUT_ENABLED:-true} # true, false
+      - TRACE_STDOUT_ENABLED=${TRACE_STDOUT_ENABLED:-false} # true, false
       - TRACE_OTLP_ENABLED=${TRACE_OTLP_ENABLED:-true} # true, false
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
       - OTEL_EXPORTER_OTLP_INSECURE=${OTEL_EXPORTER_OTLP_INSECURE:-true}

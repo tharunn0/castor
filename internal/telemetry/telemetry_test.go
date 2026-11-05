@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestNormalizeEnv(t *testing.T) {
@@ -192,4 +193,19 @@ func TestTelemetry_ExportersDisabled(t *testing.T) {
 		t.Error("expected non-recording span when both exporters disabled")
 	}
 	span.End()
+}
+
+func TestTelemetry_ShutdownWithTimeoutBoundsContext(t *testing.T) {
+	var gotDeadline bool
+	tel := &Telemetry{Shutdown: func(ctx context.Context) error {
+		_, gotDeadline = ctx.Deadline()
+		return nil
+	}}
+
+	if err := tel.ShutdownWithTimeout(time.Second); err != nil {
+		t.Fatalf("ShutdownWithTimeout() error = %v", err)
+	}
+	if !gotDeadline {
+		t.Error("Shutdown context has no deadline")
+	}
 }
