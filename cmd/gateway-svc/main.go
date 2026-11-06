@@ -51,11 +51,15 @@ func run() error {
 		logger.Error("invalid configuration", "error", err)
 		return err
 	}
+	if cfg.S3TLSCertFile == "" && (cfg.Env == telemetry.EnvProd || cfg.Env == telemetry.EnvStage) {
+		logger.Warn("S3 API is serving plain HTTP; set S3_TLS_CERT_FILE and S3_TLS_KEY_FILE unless TLS terminates upstream")
+	}
 
 	logger.Info("starting gateway service",
 		"version", version.Version,
 		"commit", version.Commit,
 		"s3_addr", cfg.S3Addr,
+		"s3_tls", cfg.S3TLSCertFile != "",
 		"console_addr", cfg.ConsoleAddr,
 		"metadata_addr", cfg.MetadataAddr,
 		"metadata_nodes", cfg.MetadataNodes,
@@ -120,6 +124,8 @@ func run() error {
 
 	gwCfg := &embedgw.Config{
 		Ports:             []string{cfg.S3Addr},
+		CertFile:          cfg.S3TLSCertFile,
+		KeyFile:           cfg.S3TLSKeyFile,
 		RootUserAccess:    cfg.RootAccessKey,
 		RootUserSecret:    cfg.RootSecretKey,
 		Region:            "us-east-1",

@@ -179,6 +179,8 @@ Castor services are configured through environment variables:
 | Variable | Description | Default |
 |:---|:---|:---|
 | `S3_ADDR` | Listen address for S3 REST API (VersityGW) | `:9000` |
+| `S3_TLS_CERT_FILE` | PEM certificate for HTTPS on `S3_ADDR`; set together with the key. Send `SIGHUP` to reload after renewal | `""` (plain HTTP) |
+| `S3_TLS_KEY_FILE` | PEM private key matching `S3_TLS_CERT_FILE` | `""` |
 | `CONSOLE_ADDR` | Listen address for Health / Fiber API | `:9001` |
 | `METADATA_NODES` | Comma-separated list of `metadata-svc` gRPC endpoints | `localhost:9090` |
 | `WRITE_QUORUM` | Required chunk replica acks for write success | `2` |

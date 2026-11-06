@@ -153,3 +153,36 @@ func TestConfigLoadInternalTokenAndEnv(t *testing.T) {
 		t.Fatalf("Env = %q, want %q", cfg.Env, telemetry.EnvProd)
 	}
 }
+
+func TestConfigValidateTLSPair(t *testing.T) {
+	tests := []struct {
+		name    string
+		cert    string
+		key     string
+		wantErr error
+	}{
+		{name: "no tls", cert: "", key: "", wantErr: nil},
+		{name: "cert and key", cert: "/tls/tls.crt", key: "/tls/tls.key", wantErr: nil},
+		{name: "cert only", cert: "/tls/tls.crt", key: "", wantErr: ErrIncompleteTLSConfig},
+		{name: "key only", cert: "", key: "/tls/tls.key", wantErr: ErrIncompleteTLSConfig},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{S3TLSCertFile: tt.cert, S3TLSKeyFile: tt.key, Env: telemetry.EnvDev}
+			if err := cfg.Validate(); !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Validate() = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestConfigLoadTLSFiles(t *testing.T) {
+	t.Setenv("S3_TLS_CERT_FILE", "/tls/tls.crt")
+	t.Setenv("S3_TLS_KEY_FILE", "/tls/tls.key")
+
+	cfg := Load()
+	if cfg.S3TLSCertFile != "/tls/tls.crt" || cfg.S3TLSKeyFile != "/tls/tls.key" {
+		t.Fatalf("got cert=%q key=%q", cfg.S3TLSCertFile, cfg.S3TLSKeyFile)
+	}
+}

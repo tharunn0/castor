@@ -19,10 +19,13 @@ const (
 var (
 	ErrDefaultRootCredsInProd = errors.New("ROOT_ACCESS_KEY_ID and ROOT_SECRET_ACCESS_KEY must be changed from their defaults in prod and staging")
 	ErrInternalTokenRequired  = errors.New("AUTH_INTERNAL_TOKEN is required in prod and staging")
+	ErrIncompleteTLSConfig    = errors.New("S3_TLS_CERT_FILE and S3_TLS_KEY_FILE must be set together")
 )
 
 type Config struct {
 	S3Addr                 string
+	S3TLSCertFile          string
+	S3TLSKeyFile           string
 	ConsoleAddr            string
 	MetadataAddr           string
 	MetadataNodes          []string
@@ -89,6 +92,8 @@ func Load() Config {
 
 	return Config{
 		S3Addr:                 s3Addr,
+		S3TLSCertFile:          os.Getenv("S3_TLS_CERT_FILE"),
+		S3TLSKeyFile:           os.Getenv("S3_TLS_KEY_FILE"),
 		ConsoleAddr:            consoleAddr,
 		MetadataAddr:           metadataAddr,
 		MetadataNodes:          metadataNodes,
@@ -105,6 +110,9 @@ func Load() Config {
 }
 
 func (c Config) Validate() error {
+	if (c.S3TLSCertFile == "") != (c.S3TLSKeyFile == "") {
+		return ErrIncompleteTLSConfig
+	}
 	// Staging is internet-facing too, so it gets the same secret checks.
 	if c.Env != telemetry.EnvProd && c.Env != telemetry.EnvStage {
 		return nil
