@@ -1,12 +1,24 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/tharunn0/castor/internal/telemetry"
+)
+
+const (
+	DefaultRootAccessKey = "admin"
+	DefaultRootSecretKey = "admin123"
+)
+
+var (
+	ErrDefaultRootCredsInProd = errors.New("ROOT_ACCESS_KEY_ID and ROOT_SECRET_ACCESS_KEY must be changed from their defaults in prod and staging")
+	ErrInternalTokenRequired  = errors.New("AUTH_INTERNAL_TOKEN is required in prod and staging")
 )
 
 type Config struct {
@@ -15,6 +27,8 @@ type Config struct {
 	MetadataAddr           string
 	MetadataNodes          []string
 	AuthAddr               string
+	AuthInternalToken      string
+	Env                    string
 	RootAccessKey          string
 	RootSecretKey          string
 	ChunkSize              int64
@@ -42,8 +56,8 @@ func Load() Config {
 	}
 
 	authAddr := getEnv("AUTH_ADDR", "http://127.0.0.1:9095")
-	rootAccessKey := getEnv("ROOT_ACCESS_KEY_ID", "admin")
-	rootSecretKey := getEnv("ROOT_SECRET_ACCESS_KEY", "admin123")
+	rootAccessKey := getEnv("ROOT_ACCESS_KEY_ID", DefaultRootAccessKey)
+	rootSecretKey := getEnv("ROOT_SECRET_ACCESS_KEY", DefaultRootSecretKey)
 
 	chunkSize := int64(4 * 1024 * 1024)
 	if v := os.Getenv("CHUNK_SIZE"); v != "" {
@@ -79,6 +93,8 @@ func Load() Config {
 		MetadataAddr:           metadataAddr,
 		MetadataNodes:          metadataNodes,
 		AuthAddr:               authAddr,
+		AuthInternalToken:      os.Getenv("AUTH_INTERNAL_TOKEN"),
+		Env:                    telemetry.GetEnv(),
 		RootAccessKey:          rootAccessKey,
 		RootSecretKey:          rootSecretKey,
 		ChunkSize:              chunkSize,
@@ -86,6 +102,20 @@ func Load() Config {
 		WriteQuorumGracePeriod: writeQuorumGracePeriod,
 		MaxConcurrentUploads:   maxConcurrentUploads,
 	}
+}
+
+func (c Config) Validate() error {
+	// Staging is internet-facing too, so it gets the same secret checks.
+	if c.Env != telemetry.EnvProd && c.Env != telemetry.EnvStage {
+		return nil
+	}
+	if c.RootAccessKey == DefaultRootAccessKey || c.RootSecretKey == DefaultRootSecretKey {
+		return ErrDefaultRootCredsInProd
+	}
+	if c.AuthInternalToken == "" {
+		return ErrInternalTokenRequired
+	}
+	return nil
 }
 
 func getEnv(key, fallback string) string {

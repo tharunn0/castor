@@ -27,6 +27,9 @@ func RegisterRoutes(app *fiber.App, cfg config.Config, authHandler *handler.Auth
 		v1.Delete("/keys/:key_id", authMW, authHandler.RevokeKey)
 
 		internal := app.Group("/internal/v1")
+		if cfg.InternalToken != "" {
+			internal.Use(requireInternalToken(cfg.InternalToken))
+		}
 		internal.Get("/validate-key", authHandler.ValidateKey)
 	}
 }

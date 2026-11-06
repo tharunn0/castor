@@ -1,8 +1,11 @@
 package config
 
 import (
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/tharunn0/castor/internal/telemetry"
 )
 
 func TestConfigLoadDefaults(t *testing.T) {
@@ -99,5 +102,54 @@ func TestConfigLoadGracePeriodDisabled(t *testing.T) {
 	cfg := Load()
 	if cfg.WriteQuorumGracePeriod != 0 {
 		t.Errorf("expected WriteQuorumGracePeriod 0, got %v", cfg.WriteQuorumGracePeriod)
+	}
+}
+
+func TestConfigValidateProduction(t *testing.T) {
+	base := Config{RootAccessKey: "root", RootSecretKey: "root-secret", AuthInternalToken: "tok", Env: telemetry.EnvProd}
+
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr error
+	}{
+		{name: "valid production config", mutate: func(*Config) {}, wantErr: nil},
+		{name: "default root access key", mutate: func(c *Config) { c.RootAccessKey = DefaultRootAccessKey }, wantErr: ErrDefaultRootCredsInProd},
+		{name: "default root secret key", mutate: func(c *Config) { c.RootSecretKey = DefaultRootSecretKey }, wantErr: ErrDefaultRootCredsInProd},
+		{name: "missing internal token", mutate: func(c *Config) { c.AuthInternalToken = "" }, wantErr: ErrInternalTokenRequired},
+		{name: "staging enforces checks", mutate: func(c *Config) {
+			c.Env = telemetry.EnvStage
+			c.RootSecretKey = DefaultRootSecretKey
+		}, wantErr: ErrDefaultRootCredsInProd},
+		{name: "staging valid config", mutate: func(c *Config) { c.Env = telemetry.EnvStage }, wantErr: nil},
+		{name: "dev allows defaults", mutate: func(c *Config) {
+			c.Env = telemetry.EnvDev
+			c.RootAccessKey = DefaultRootAccessKey
+			c.RootSecretKey = DefaultRootSecretKey
+			c.AuthInternalToken = ""
+		}, wantErr: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := base
+			tt.mutate(&cfg)
+			if err := cfg.Validate(); !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Validate() = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestConfigLoadInternalTokenAndEnv(t *testing.T) {
+	t.Setenv("AUTH_INTERNAL_TOKEN", "tok")
+	t.Setenv("APP_ENV", "prod")
+
+	cfg := Load()
+	if cfg.AuthInternalToken != "tok" {
+		t.Fatalf("AuthInternalToken = %q, want %q", cfg.AuthInternalToken, "tok")
+	}
+	if cfg.Env != telemetry.EnvProd {
+		t.Fatalf("Env = %q, want %q", cfg.Env, telemetry.EnvProd)
 	}
 }

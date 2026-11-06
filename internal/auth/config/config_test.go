@@ -3,6 +3,8 @@ package config
 import (
 	"errors"
 	"testing"
+
+	"github.com/tharunn0/castor/internal/telemetry"
 )
 
 func TestConfig_Validate(t *testing.T) {
@@ -198,5 +200,59 @@ func TestLoad_InvalidFallbacks(t *testing.T) {
 	}
 	if cfg.BcryptCost != 12 {
 		t.Fatalf("expected BcryptCost fallback 12, got %d", cfg.BcryptCost)
+	}
+}
+
+func TestValidate_Production(t *testing.T) {
+	base := Config{AdminSecretKey: "admin", JWTSecret: "a-real-jwt-secret", InternalToken: "tok", Env: telemetry.EnvProd}
+
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr error
+	}{
+		{name: "valid production config", mutate: func(*Config) {}, wantErr: nil},
+		{name: "missing internal token", mutate: func(c *Config) { c.InternalToken = "" }, wantErr: ErrInternalTokenRequired},
+		{name: "default jwt secret", mutate: func(c *Config) { c.JWTSecret = DefaultJWTSecret }, wantErr: ErrDefaultJWTSecretInProd},
+		{name: "staging enforces checks", mutate: func(c *Config) {
+			c.Env = telemetry.EnvStage
+			c.InternalToken = ""
+		}, wantErr: ErrInternalTokenRequired},
+		{name: "staging valid config", mutate: func(c *Config) { c.Env = telemetry.EnvStage }, wantErr: nil},
+		{name: "dev allows defaults", mutate: func(c *Config) {
+			c.Env = telemetry.EnvDev
+			c.InternalToken = ""
+			c.JWTSecret = DefaultJWTSecret
+		}, wantErr: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := base
+			tt.mutate(&cfg)
+			if err := cfg.Validate(); !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Validate() = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoad_InternalTokenAndEnv(t *testing.T) {
+	t.Setenv("ADMIN_SECRET_KEY", "admin")
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("AUTH_JWT_SECRET", "a-real-jwt-secret")
+	t.Setenv("AUTH_INTERNAL_TOKEN", "")
+
+	if _, err := Load(); !errors.Is(err, ErrInternalTokenRequired) {
+		t.Fatalf("expected ErrInternalTokenRequired, got %v", err)
+	}
+
+	t.Setenv("AUTH_INTERNAL_TOKEN", "tok")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.InternalToken != "tok" || cfg.Env != telemetry.EnvProd {
+		t.Fatalf("got InternalToken=%q Env=%q", cfg.InternalToken, cfg.Env)
 	}
 }

@@ -204,6 +204,7 @@ services:
       - METADATA_ADDR=${METADATA_ADDR:-metadata-1:9090}
       - METADATA_NODES=${METADATA_NODES:-metadata-1:9090,metadata-2:9090,metadata-3:9090}
       - AUTH_ADDR=${AUTH_ADDR:-http://auth-svc:9095}
+      - AUTH_INTERNAL_TOKEN=${AUTH_INTERNAL_TOKEN:-}
       - ROOT_ACCESS_KEY_ID=${ROOT_ACCESS_KEY_ID:-admin}
       - ROOT_SECRET_ACCESS_KEY=${ROOT_SECRET_ACCESS_KEY:-admin123}
       - WRITE_QUORUM=${WRITE_QUORUM:-2}
@@ -217,7 +218,7 @@ services:
     ports:
       - "${S3_PORT:-9000}:9000"
       - "${CONSOLE_PORT:-9001}:9001"
-      - "127.0.0.1:6060:6060" // pprof
+      - "127.0.0.1:6060:6060" # pprof
     networks:
       - castor-net
     depends_on:
@@ -281,6 +282,7 @@ services:
       - AUTH_BCRYPT_COST=${AUTH_BCRYPT_COST:-12}
       - AUTH_JWT_SECRET=${AUTH_JWT_SECRET:-castor-auth-jwt-super-secret-key-change-in-production}
       - AUTH_JWT_EXPIRY=${AUTH_JWT_EXPIRY:-24h}
+      - AUTH_INTERNAL_TOKEN=${AUTH_INTERNAL_TOKEN:-}
     ports:
       - "${AUTH_HTTP_PORT:-9095}:9095"
     depends_on:

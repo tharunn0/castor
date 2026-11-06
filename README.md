@@ -186,6 +186,18 @@ Castor services are configured through environment variables:
 | `CHUNK_SIZE` | Chunk size in bytes (Invariant: 4MiB) | `4194304` |
 | `ROOT_ACCESS_KEY_ID` | Bootstrap root S3 Access Key ID | `admin` |
 | `ROOT_SECRET_ACCESS_KEY` | Bootstrap root S3 Secret Access Key | `admin123` |
+| `AUTH_INTERNAL_TOKEN` | Shared token sent to `auth-svc` on `/internal/v1/*`; must match auth-svc | `""` |
+
+With `APP_ENV=prod` or `staging`, the gateway refuses to start with the default root credentials or without `AUTH_INTERNAL_TOKEN`.
+
+### `auth-svc`
+| Variable | Description | Default |
+|:---|:---|:---|
+| `AUTH_INTERNAL_TOKEN` | Required header value (`X-Castor-Internal-Token`) for `/internal/v1/*`; unset leaves it open | `""` |
+| `AUTH_JWT_SECRET` | JWT signing secret | built-in placeholder |
+| `ADMIN_SECRET_KEY` | Secret needed to register admin users (required) | — |
+
+With `APP_ENV=prod` or `staging`, auth-svc refuses to start without `AUTH_INTERNAL_TOKEN` or with the placeholder `AUTH_JWT_SECRET`.
 
 ### `metadata-svc`
 | Variable | Description | Default |

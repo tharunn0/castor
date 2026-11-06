@@ -7,9 +7,16 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/tharunn0/castor/internal/telemetry"
 )
 
-var ErrAdminSecretKeyRequired = errors.New("admin secret key is required")
+const DefaultJWTSecret = "castor-auth-jwt-super-secret-key-change-in-production"
+
+var (
+	ErrAdminSecretKeyRequired = errors.New("admin secret key is required")
+	ErrInternalTokenRequired  = errors.New("AUTH_INTERNAL_TOKEN is required in prod and staging")
+	ErrDefaultJWTSecretInProd = errors.New("AUTH_JWT_SECRET must be changed from its default in prod and staging")
+)
 
 type Config struct {
 	HTTPAddr        string
@@ -31,6 +38,10 @@ type Config struct {
 	BcryptCost     int
 	JWTSecret      string
 	JWTExpiry      time.Duration
+
+	// InternalToken guards /internal/v1/*, which returns secret keys.
+	InternalToken string
+	Env           string
 }
 
 func Load() (Config, error) {
@@ -74,8 +85,11 @@ func Load() (Config, error) {
 		AdminKey:       adminSecret,
 		AdminSecretKey: adminSecret,
 		BcryptCost:     bcryptCost,
-		JWTSecret:      getEnv("AUTH_JWT_SECRET", "castor-auth-jwt-super-secret-key-change-in-production"),
+		JWTSecret:      getEnv("AUTH_JWT_SECRET", DefaultJWTSecret),
 		JWTExpiry:      parseDuration(getEnv("AUTH_JWT_EXPIRY", "24h"), 24*time.Hour),
+
+		InternalToken: os.Getenv("AUTH_INTERNAL_TOKEN"),
+		Env:           telemetry.GetEnv(),
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -88,6 +102,15 @@ func Load() (Config, error) {
 func (c Config) Validate() error {
 	if c.AdminSecretKey == "" && c.AdminKey == "" {
 		return ErrAdminSecretKeyRequired
+	}
+	// Staging is internet-facing too, so it gets the same secret checks.
+	if c.Env == telemetry.EnvProd || c.Env == telemetry.EnvStage {
+		if c.InternalToken == "" {
+			return ErrInternalTokenRequired
+		}
+		if c.JWTSecret == "" || c.JWTSecret == DefaultJWTSecret {
+			return ErrDefaultJWTSecretInProd
+		}
 	}
 	return nil
 }

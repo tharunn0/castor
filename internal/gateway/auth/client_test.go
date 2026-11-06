@@ -201,3 +201,38 @@ func stringContains(s, substr string) bool {
 	}
 	return false
 }
+
+func TestHTTPClient_InternalTokenHeader(t *testing.T) {
+	tests := []struct {
+		name  string
+		token string
+	}{
+		{name: "token sent when configured", token: "s3cr3t"},
+		{name: "no header without token", token: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got string
+			var present bool
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, present = r.Header[http.CanonicalHeaderKey(InternalTokenHeader)]
+				got = r.Header.Get(InternalTokenHeader)
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(ValidateKeyResponse{AccessKeyID: "AKIATEST", SecretAccessKey: "s", Status: StatusActive})
+			}))
+			defer srv.Close()
+
+			client := NewHTTPClient(srv.URL, WithInternalToken(tt.token))
+			if _, err := client.ValidateKey(context.Background(), "AKIATEST"); err != nil {
+				t.Fatalf("ValidateKey: %v", err)
+			}
+			if tt.token == "" && present {
+				t.Fatalf("header sent without a configured token")
+			}
+			if tt.token != "" && got != tt.token {
+				t.Fatalf("header = %q, want %q", got, tt.token)
+			}
+		})
+	}
+}

@@ -47,6 +47,10 @@ func run() error {
 
 	logger := tel.Logger
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		logger.Error("invalid configuration", "error", err)
+		return err
+	}
 
 	logger.Info("starting gateway service",
 		"version", version.Version,
@@ -89,7 +93,7 @@ func run() error {
 		backend.WithMetrics(gwMetrics),
 	)
 
-	authClient := gwauth.NewHTTPClient(cfg.AuthAddr)
+	authClient := gwauth.NewHTTPClient(cfg.AuthAddr, gwauth.WithInternalToken(cfg.AuthInternalToken))
 	iamBridge := gwauth.NewBridge(authClient, cfg.RootAccessKey, cfg.RootSecretKey, logger)
 	iamCache := gwauth.NewCachedBridge(iamBridge)
 	defer func() {

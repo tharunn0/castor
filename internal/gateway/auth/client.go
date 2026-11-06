@@ -42,11 +42,15 @@ type Client interface {
 	ValidateKey(ctx context.Context, accessKeyID string) (*ValidateKeyResponse, error)
 }
 
+// InternalTokenHeader must match the header auth-svc checks on /internal/v1/*.
+const InternalTokenHeader = "X-Castor-Internal-Token"
+
 type HTTPClient struct {
-	baseURL    string
-	httpClient *http.Client
-	propagator propagation.TextMapPropagator
-	log        *slog.Logger
+	baseURL       string
+	internalToken string
+	httpClient    *http.Client
+	propagator    propagation.TextMapPropagator
+	log           *slog.Logger
 }
 
 type ClientOption func(*HTTPClient)
@@ -64,6 +68,12 @@ func WithPropagator(p propagation.TextMapPropagator) ClientOption {
 		if p != nil {
 			c.propagator = p
 		}
+	}
+}
+
+func WithInternalToken(token string) ClientOption {
+	return func(c *HTTPClient) {
+		c.internalToken = token
 	}
 }
 
@@ -99,6 +109,9 @@ func (c *HTTPClient) ValidateKey(ctx context.Context, accessKeyID string) (*Vali
 	}
 
 	req.Header.Set("Accept", "application/json")
+	if c.internalToken != "" {
+		req.Header.Set(InternalTokenHeader, c.internalToken)
+	}
 	if c.propagator != nil {
 		c.propagator.Inject(ctx, propagation.HeaderCarrier(req.Header))
 	}
