@@ -12,6 +12,8 @@ import (
 	"time"
 
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
+	"github.com/tharunn0/castor/internal/gateway/config"
+	"github.com/tharunn0/castor/internal/grpcutil"
 	"github.com/tharunn0/castor/internal/telemetry"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -41,6 +43,14 @@ func WithActiveNodeCacheTTL(ttl time.Duration) PlacementOption {
 	}
 }
 
+func WithChunkTimeout(d time.Duration) PlacementOption {
+	return func(m *PlacementManager) {
+		if d > 0 {
+			m.chunkTimeout = d
+		}
+	}
+}
+
 func WithWriteGracePeriod(d time.Duration) PlacementOption {
 	return func(m *PlacementManager) {
 		m.writeGracePeriod = d
@@ -52,6 +62,7 @@ type PlacementManager struct {
 	mu                 sync.RWMutex
 	writeQuorum        int
 	writeGracePeriod   time.Duration
+	chunkTimeout       time.Duration
 	clients            map[string]castorv1.DataServiceClient
 	conns              map[string]*grpc.ClientConn
 	activeNodeProvider ActiveNodeProvider
@@ -64,6 +75,7 @@ func NewPlacementManager(writeQuorum int, opts ...PlacementOption) *PlacementMan
 	m := &PlacementManager{
 		writeQuorum:      writeQuorum,
 		writeGracePeriod: 100 * time.Millisecond,
+		chunkTimeout:     config.DefaultDataChunkTimeout,
 		clients:          make(map[string]castorv1.DataServiceClient),
 		conns:            make(map[string]*grpc.ClientConn),
 		cacheTTL:         3 * time.Second,
@@ -274,6 +286,9 @@ func (m *PlacementManager) StreamChunkToNode(ctx context.Context, nodeAddr strin
 		return err
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, m.chunkTimeout)
+	defer cancel()
+
 	stream, err := client.PutChunk(ctx)
 	if err != nil {
 		return err
@@ -319,6 +334,9 @@ func (m *PlacementManager) ReadChunkFromNode(ctx context.Context, nodeAddr strin
 	if err != nil {
 		return nil, err
 	}
+
+	ctx, cancel := context.WithTimeout(ctx, m.chunkTimeout)
+	defer cancel()
 
 	stream, err := client.GetChunk(ctx, &castorv1.GetChunkRequest{
 		ChunkHash: chunkHash,
@@ -384,6 +402,7 @@ func (m *PlacementManager) getClient(nodeAddr string) (castorv1.DataServiceClien
 		nodeAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		telemetry.ClientDialOption(),
+		grpcutil.ConnectParams(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("connect to node %s: %w", nodeAddr, err)

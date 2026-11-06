@@ -14,6 +14,7 @@ import (
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
 	"github.com/tharunn0/castor/internal/data/config"
 	"github.com/tharunn0/castor/internal/data/storage"
+	"github.com/tharunn0/castor/internal/grpcutil"
 	"github.com/tharunn0/castor/internal/telemetry"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -95,6 +96,7 @@ func defaultDial(ctx context.Context, target string) (*grpc.ClientConn, castorv1
 		target,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		telemetry.ClientDialOption(),
+		grpcutil.ConnectParams(),
 	)
 	if err != nil {
 		return nil, nil, err

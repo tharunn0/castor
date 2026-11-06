@@ -186,6 +186,9 @@ Castor services are configured through environment variables:
 | `WRITE_QUORUM` | Required chunk replica acks for write success | `2` |
 | `WRITE_QUORUM_GRACE_PERIOD` | Grace period to wait for tail replicas after quorum | `100ms` |
 | `CHUNK_SIZE` | Chunk size in bytes (Invariant: 4MiB) | `4194304` |
+| `METADATA_CALL_TIMEOUT` | Deadline for one RPC attempt against one metadata node; on expiry the next node is tried | `3s` |
+| `METADATA_LEADER_WAIT` | How long to keep retrying while no metadata node accepts a request (e.g. during an election) before returning 503 `SlowDown` | `3s` |
+| `DATA_CHUNK_TIMEOUT` | Deadline for one chunk transfer to or from one data node | `30s` |
 | `ROOT_ACCESS_KEY_ID` | Bootstrap root S3 Access Key ID | `admin` |
 | `ROOT_SECRET_ACCESS_KEY` | Bootstrap root S3 Secret Access Key | `admin123` |
 | `AUTH_INTERNAL_TOKEN` | Shared token sent to `auth-svc` on `/internal/v1/*`; must match auth-svc | `""` |

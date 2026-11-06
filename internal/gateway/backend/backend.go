@@ -140,6 +140,7 @@ func (b *CastorBackend) GetBucketAcl(ctx context.Context, input *s3.GetBucketAcl
 	owner := "admin"
 	if input != nil && input.Bucket != nil && *input.Bucket != "" {
 		buckets, err := b.engine.ListBuckets(ctx)
+		err = mapUnavailable(err)
 		if err == nil {
 			for _, info := range buckets {
 				if info.Name == *input.Bucket && info.OwnerID != "" {
@@ -179,6 +180,7 @@ func (b *CastorBackend) HeadBucket(ctx context.Context, input *s3.HeadBucketInpu
 		return nil, s3err.GetAPIError(s3err.ErrInvalidBucketName)
 	}
 	exists, err := b.engine.CheckBucketExists(ctx, *input.Bucket)
+	err = mapUnavailable(err)
 	if err != nil {
 		return nil, err
 	}
@@ -227,6 +229,7 @@ func (b *CastorBackend) PutObject(ctx context.Context, input s3response.PutObjec
 	}
 
 	etag, err := b.engine.PutObject(ctx, bucket, key, "admin", input.Body, size)
+	err = mapUnavailable(err)
 	if err != nil {
 		if errors.Is(err, storage.ErrBucketNotFound) {
 			err = s3err.GetBucketErr(s3err.ErrNoSuchBucket, bucket)
@@ -272,6 +275,7 @@ func (b *CastorBackend) GetObject(ctx context.Context, input *s3.GetObjectInput)
 
 	if input.Range != nil && *input.Range != "" {
 		exists, err := b.engine.CheckBucketExists(ctx, *input.Bucket)
+		err = mapUnavailable(err)
 		if err != nil {
 			if errors.Is(err, storage.ErrBucketNotFound) {
 				return nil, s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
@@ -283,6 +287,7 @@ func (b *CastorBackend) GetObject(ctx context.Context, input *s3.GetObjectInput)
 		}
 
 		manifest, err := b.engine.GetManifest(ctx, *input.Bucket, *input.Key)
+		err = mapUnavailable(err)
 		if err != nil {
 			if errors.Is(err, storage.ErrObjectNotFound) {
 				return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
@@ -306,8 +311,10 @@ func (b *CastorBackend) GetObject(ctx context.Context, input *s3.GetObjectInput)
 
 	if isRangeValid {
 		reader, info, err = b.engine.GetObjectRange(ctx, *input.Bucket, *input.Key, start, length)
+		err = mapUnavailable(err)
 	} else {
 		reader, info, err = b.engine.GetObject(ctx, *input.Bucket, *input.Key)
+		err = mapUnavailable(err)
 	}
 	if err != nil {
 		if errors.Is(err, storage.ErrBucketNotFound) {
@@ -362,6 +369,7 @@ func (b *CastorBackend) HeadObject(ctx context.Context, input *s3.HeadObjectInpu
 	}
 
 	exists, err := b.engine.CheckBucketExists(ctx, *input.Bucket)
+	err = mapUnavailable(err)
 	if err != nil {
 		if errors.Is(err, storage.ErrBucketNotFound) {
 			return nil, s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
@@ -373,6 +381,7 @@ func (b *CastorBackend) HeadObject(ctx context.Context, input *s3.HeadObjectInpu
 	}
 
 	manifest, err := b.engine.GetManifest(ctx, *input.Bucket, *input.Key)
+	err = mapUnavailable(err)
 	if err != nil {
 		if errors.Is(err, storage.ErrBucketNotFound) {
 			return nil, s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
@@ -478,6 +487,7 @@ func (b *CastorBackend) CreateBucket(ctx context.Context, req *s3.CreateBucketIn
 
 	b.logger.DebugContext(ctx, "[ Gateway-Backend : CreateBucket Request ]", "bucket", bucket, "owner", ownerID, "tags", tags)
 	err := b.engine.CreateBucket(ctx, bucket, ownerID, tags)
+	err = mapUnavailable(err)
 	if err != nil {
 		if errors.Is(err, storage.ErrBucketAlreadyExists) {
 			err = s3err.GetBucketErr(s3err.ErrBucketAlreadyOwnedByYou, bucket)
@@ -502,6 +512,7 @@ func (b *CastorBackend) CreateBucket(ctx context.Context, req *s3.CreateBucketIn
 
 func (b *CastorBackend) ListBuckets(ctx context.Context, input s3response.ListBucketsInput) (s3response.ListAllMyBucketsResult, error) {
 	bucketInfos, err := b.engine.ListBuckets(ctx)
+	err = mapUnavailable(err)
 	if err != nil {
 		return s3response.ListAllMyBucketsResult{}, err
 	}
@@ -554,6 +565,7 @@ func (b *CastorBackend) DeleteBucket(ctx context.Context, bucket string) error {
 	}
 
 	err := b.engine.DeleteBucket(ctx, bucket)
+	err = mapUnavailable(err)
 	if err != nil {
 		if errors.Is(err, storage.ErrBucketNotFound) {
 			return s3err.GetBucketErr(s3err.ErrNoSuchBucket, bucket)
@@ -584,6 +596,7 @@ func (b *CastorBackend) DeleteObject(ctx context.Context, input *s3.DeleteObject
 	}
 
 	err := b.engine.DeleteObject(ctx, *input.Bucket, *input.Key)
+	err = mapUnavailable(err)
 	if err != nil {
 		if errors.Is(err, storage.ErrBucketNotFound) {
 			return nil, s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
@@ -618,6 +631,7 @@ func (b *CastorBackend) ListObjectsV2(ctx context.Context, input *s3.ListObjects
 	}
 
 	resp, err := b.engine.ListObjects(ctx, *input.Bucket, prefix, delimiter, marker, maxKeys)
+	err = mapUnavailable(err)
 	if err != nil {
 		if errors.Is(err, storage.ErrBucketNotFound) {
 			return s3response.ListObjectsV2Result{}, s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
@@ -706,6 +720,7 @@ func (b *CastorBackend) ListObjects(ctx context.Context, input *s3.ListObjectsIn
 	}
 
 	resp, err := b.engine.ListObjects(ctx, *input.Bucket, prefix, delimiter, marker, maxKeys)
+	err = mapUnavailable(err)
 	if err != nil {
 		if errors.Is(err, storage.ErrBucketNotFound) {
 			return s3response.ListObjectsResult{}, s3err.GetBucketErr(s3err.ErrNoSuchBucket, *input.Bucket)
@@ -803,6 +818,7 @@ func (b *CastorBackend) CreateMultipartUpload(ctx context.Context, input s3respo
 	}
 
 	uploadID, err := b.engine.InitiateMultipartUpload(ctx, bucket, key, contentType)
+	err = mapUnavailable(err)
 	if err != nil {
 		if errors.Is(err, storage.ErrBucketNotFound) {
 			err = s3err.GetBucketErr(s3err.ErrNoSuchBucket, bucket)
@@ -890,6 +906,7 @@ func (b *CastorBackend) UploadPart(ctx context.Context, input *s3.UploadPartInpu
 	}
 
 	etag, err := b.engine.UploadPart(ctx, bucket, key, uploadID, partNum, input.Body, size)
+	err = mapUnavailable(err)
 	if err != nil {
 		if errors.Is(err, storage.ErrNoSuchUpload) {
 			err = s3err.GetAPIError(s3err.ErrNoSuchUpload)
@@ -985,6 +1002,7 @@ func (b *CastorBackend) CompleteMultipartUpload(ctx context.Context, input *s3.C
 	}
 
 	objInfo, err := b.engine.CompleteMultipartUpload(ctx, bucket, key, uploadID, parts)
+	err = mapUnavailable(err)
 	if err != nil {
 		if errors.Is(err, storage.ErrNoSuchUpload) {
 			err = s3err.GetAPIError(s3err.ErrNoSuchUpload)
@@ -1031,6 +1049,7 @@ func (b *CastorBackend) AbortMultipartUpload(ctx context.Context, input *s3.Abor
 	}
 
 	err := b.engine.AbortMultipartUpload(ctx, *input.Bucket, *input.Key, *input.UploadId)
+	err = mapUnavailable(err)
 	if err != nil {
 		if errors.Is(err, storage.ErrNoSuchUpload) {
 			return s3err.GetAPIError(s3err.ErrNoSuchUpload)
@@ -1042,4 +1061,15 @@ func (b *CastorBackend) AbortMultipartUpload(ctx context.Context, input *s3.Abor
 	}
 
 	return nil
+}
+
+// mapUnavailable turns "cluster can't serve this right now" errors into a 503
+// SlowDown, which S3 clients retry, instead of a 500 InternalError.
+func mapUnavailable(err error) error {
+	if errors.Is(err, storage.ErrMetadataUnavailable) ||
+		errors.Is(err, storage.ErrQuorumNotMet) ||
+		errors.Is(err, storage.ErrNoNodes) {
+		return s3err.GetAPIError(s3err.ErrSlowDown)
+	}
+	return err
 }

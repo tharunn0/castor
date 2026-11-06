@@ -38,7 +38,21 @@ type Config struct {
 	WriteQuorum            int
 	WriteQuorumGracePeriod time.Duration
 	MaxConcurrentUploads   int
+
+	// MetadataCallTimeout bounds one RPC attempt against one metadata node.
+	MetadataCallTimeout time.Duration
+	// MetadataLeaderWait is how long to keep retrying while no metadata node
+	// accepts the request (e.g. during a Raft election) before failing with 503.
+	MetadataLeaderWait time.Duration
+	// DataChunkTimeout bounds one chunk transfer to or from one data node.
+	DataChunkTimeout time.Duration
 }
+
+const (
+	DefaultMetadataCallTimeout = 3 * time.Second
+	DefaultMetadataLeaderWait  = 3 * time.Second
+	DefaultDataChunkTimeout    = 30 * time.Second
+)
 
 func Load() Config {
 	_ = godotenv.Load()
@@ -91,6 +105,9 @@ func Load() Config {
 	}
 
 	return Config{
+		MetadataCallTimeout:    parsePositiveDuration("METADATA_CALL_TIMEOUT", DefaultMetadataCallTimeout),
+		MetadataLeaderWait:     parsePositiveDuration("METADATA_LEADER_WAIT", DefaultMetadataLeaderWait),
+		DataChunkTimeout:       parsePositiveDuration("DATA_CHUNK_TIMEOUT", DefaultDataChunkTimeout),
 		S3Addr:                 s3Addr,
 		S3TLSCertFile:          os.Getenv("S3_TLS_CERT_FILE"),
 		S3TLSKeyFile:           os.Getenv("S3_TLS_KEY_FILE"),
@@ -124,6 +141,15 @@ func (c Config) Validate() error {
 		return ErrInternalTokenRequired
 	}
 	return nil
+}
+
+func parsePositiveDuration(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return fallback
 }
 
 func getEnv(key, fallback string) string {

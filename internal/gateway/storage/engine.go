@@ -21,6 +21,7 @@ import (
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
 	"github.com/tharunn0/castor/internal/gateway/config"
 	gwtelemetry "github.com/tharunn0/castor/internal/gateway/telemetry"
+	"github.com/tharunn0/castor/internal/grpcutil"
 	"github.com/tharunn0/castor/internal/telemetry"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -36,6 +37,7 @@ var (
 	ErrObjectNotFound      = errors.New("object not found")
 	ErrNoSuchUpload        = errors.New("multipart upload not found")
 	ErrInvalidPart         = errors.New("invalid or mismatched part")
+	ErrMetadataUnavailable = errors.New("metadata service unavailable")
 )
 
 type ObjectInfo struct {
@@ -106,8 +108,8 @@ func (e *StorageEngine) triggerReadRepair(chunkHash, failedNode string) {
 		repairCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		err := e.executeWithLeader(repairCtx, func(client castorv1.MetadataServiceClient) error {
-			_, err := client.TriggerReadRepair(repairCtx, &castorv1.TriggerReadRepairRequest{
+		err := e.executeWithLeader(repairCtx, func(ctx context.Context, client castorv1.MetadataServiceClient) error {
+			_, err := client.TriggerReadRepair(ctx, &castorv1.TriggerReadRepairRequest{
 				ChunkHash:         chunkHash,
 				FailedNodeAddress: failedNode,
 			})
@@ -130,7 +132,10 @@ func (e *StorageEngine) triggerReadRepair(chunkHash, failedNode string) {
 
 func New(cfg config.Config, metaClient castorv1.MetadataServiceClient) *StorageEngine {
 	pool := NewBufferPool(cfg.ChunkSize, cfg.MaxConcurrentUploads)
-	placement := NewPlacementManager(cfg.WriteQuorum, WithWriteGracePeriod(cfg.WriteQuorumGracePeriod))
+	placement := NewPlacementManager(cfg.WriteQuorum,
+		WithWriteGracePeriod(cfg.WriteQuorumGracePeriod),
+		WithChunkTimeout(cfg.DataChunkTimeout),
+	)
 
 	metaClients := make(map[string]castorv1.MetadataServiceClient)
 	metaConns := make(map[string]*grpc.ClientConn)
@@ -164,7 +169,7 @@ func New(cfg config.Config, metaClient castorv1.MetadataServiceClient) *StorageE
 
 	placement.SetActiveNodeProvider(func(ctx context.Context) ([]*castorv1.NodeCapacity, error) {
 		var nodes []*castorv1.NodeCapacity
-		err := engine.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+		err := engine.executeWithLeader(ctx, func(ctx context.Context, client castorv1.MetadataServiceClient) error {
 			resp, err := client.GetActiveNodes(ctx, &castorv1.GetActiveNodesRequest{})
 			if err != nil {
 				return err
@@ -207,6 +212,7 @@ func (e *StorageEngine) getOrCreateClient(addr string) (castorv1.MetadataService
 		addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		telemetry.ClientDialOption(),
+		grpcutil.ConnectParams(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("dial metadata node %s: %w", addr, err)
@@ -294,70 +300,123 @@ func (e *StorageEngine) resolveLeaderHint(hint string, nodes []string) string {
 	return hint
 }
 
-func (e *StorageEngine) executeWithLeader(ctx context.Context, op func(client castorv1.MetadataServiceClient) error) error {
-	e.metaMu.RLock()
-	currentLeader := e.activeLeader
-	nodes := make([]string, len(e.metaNodes))
-	copy(nodes, e.metaNodes)
-	e.metaMu.RUnlock()
+type metadataOp func(ctx context.Context, client castorv1.MetadataServiceClient) error
 
-	var currentClient castorv1.MetadataServiceClient
-	if currentLeader != "" {
-		currentClient, _ = e.getOrCreateClient(currentLeader)
-	}
-	if currentClient == nil {
-		currentClient = e.metaClient
-	}
+const (
+	leaderRetryBaseDelay = 50 * time.Millisecond
+	leaderRetryMaxDelay  = 500 * time.Millisecond
+)
 
-	if currentClient != nil {
-		err := op(currentClient)
-		if err == nil || !isLeaderOrUnavailableError(err) {
+func (e *StorageEngine) executeWithLeader(ctx context.Context, op metadataOp) error {
+	deadline := time.Now().Add(e.metadataLeaderWait())
+	delay := leaderRetryBaseDelay
+	for {
+		retry, err := e.tryMetadataNodes(ctx, op)
+		if !retry {
 			return err
 		}
-
-		leaderHint := extractLeaderHint(err)
-		if leaderHint != "" {
-			resolved := e.resolveLeaderHint(leaderHint, nodes)
-			if resolved != "" {
-				e.AddMetadataNode(resolved)
-				if hintClient, hintErr := e.getOrCreateClient(resolved); hintErr == nil {
-					err = op(hintClient)
-					if err == nil || !isLeaderOrUnavailableError(err) {
-						e.metaMu.Lock()
-						e.activeLeader = resolved
-						e.metaMu.Unlock()
-						return err
-					}
-				}
-			}
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
+		if time.Now().Add(delay).After(deadline) {
+			return fmt.Errorf("%w: %w", ErrMetadataUnavailable, err)
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		delay = min(delay*2, leaderRetryMaxDelay)
+	}
+}
+
+func (e *StorageEngine) tryMetadataNodes(ctx context.Context, op metadataOp) (bool, error) {
+	e.metaMu.RLock()
+	currentLeader := e.activeLeader
+	nodes := slices.Clone(e.metaNodes)
+	e.metaMu.RUnlock()
+
+	if currentLeader == "" && len(nodes) == 0 {
+		if e.metaClient == nil {
+			return false, errors.New("no metadata nodes configured")
+		}
+		return e.callMetadata(ctx, op, e.metaClient)
 	}
 
+	queue := make([]string, 0, len(nodes)+1)
+	if currentLeader != "" {
+		queue = append(queue, currentLeader)
+	}
+	queue = append(queue, nodes...)
+
+	tried := make(map[string]bool, len(queue))
 	var lastErr error
-	for _, node := range nodes {
-		if node == currentLeader {
+	for len(queue) > 0 {
+		addr := queue[0]
+		queue = queue[1:]
+		if tried[addr] {
 			continue
 		}
-		client, err := e.getOrCreateClient(node)
+		tried[addr] = true
+
+		client, err := e.getOrCreateClient(addr)
 		if err != nil {
 			lastErr = err
 			continue
 		}
 
-		err = op(client)
-		if err == nil || !isLeaderOrUnavailableError(err) {
+		retry, err := e.callMetadata(ctx, op, client)
+		if !retry {
 			e.metaMu.Lock()
-			e.activeLeader = node
+			e.activeLeader = addr
 			e.metaMu.Unlock()
-			return err
+			return false, err
 		}
 		lastErr = err
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+
+		hint := e.resolveLeaderHint(extractLeaderHint(err), nodes)
+		if hint != "" && !tried[hint] && slices.Contains(nodes, hint) {
+			queue = append([]string{hint}, queue...)
+		}
+	}
+	return true, lastErr
+}
+
+func (e *StorageEngine) callMetadata(ctx context.Context, op metadataOp, client castorv1.MetadataServiceClient) (bool, error) {
+	attemptCtx, cancel := context.WithTimeout(ctx, e.metadataCallTimeout())
+	defer cancel()
+
+	err := op(attemptCtx, client)
+	if err == nil {
+		return false, nil
+	}
+	if isLeaderOrUnavailableError(err) {
+		return true, err
 	}
 
-	if lastErr != nil {
-		return lastErr
+	if ctx.Err() == nil && errors.Is(attemptCtx.Err(), context.DeadlineExceeded) {
+		return true, err
 	}
-	return errors.New("no metadata leader available")
+	return false, err
+}
+
+func (e *StorageEngine) metadataCallTimeout() time.Duration {
+	if e.cfg.MetadataCallTimeout > 0 {
+		return e.cfg.MetadataCallTimeout
+	}
+	return config.DefaultMetadataCallTimeout
+}
+
+func (e *StorageEngine) metadataLeaderWait() time.Duration {
+	if e.cfg.MetadataLeaderWait > 0 {
+		return e.cfg.MetadataLeaderWait
+	}
+	return config.DefaultMetadataLeaderWait
 }
 
 func (e *StorageEngine) FindLeader(ctx context.Context) (castorv1.MetadataServiceClient, string, error) {
@@ -378,8 +437,11 @@ func (e *StorageEngine) FindLeader(ctx context.Context) (castorv1.MetadataServic
 		if err != nil {
 			continue
 		}
-		_, err = client.CheckBucketExists(ctx, &castorv1.CheckBucketExistsRequest{Bucket: "__probe__"})
-		if err == nil || !isLeaderOrUnavailableError(err) {
+		retry, _ := e.callMetadata(ctx, func(ctx context.Context, c castorv1.MetadataServiceClient) error {
+			_, err := c.CheckBucketExists(ctx, &castorv1.CheckBucketExistsRequest{Bucket: "__probe__"})
+			return err
+		}, client)
+		if !retry {
 			e.metaMu.Lock()
 			e.activeLeader = node
 			e.metaMu.Unlock()
@@ -402,7 +464,7 @@ func (e *StorageEngine) PutObject(ctx context.Context, bucket, key, ownerID stri
 	}
 
 	var existsResp *castorv1.CheckBucketExistsResponse
-	err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+	err := e.executeWithLeader(ctx, func(ctx context.Context, client castorv1.MetadataServiceClient) error {
 		var err error
 		existsResp, err = client.CheckBucketExists(ctx, &castorv1.CheckBucketExistsRequest{Bucket: bucket})
 		return err
@@ -450,7 +512,7 @@ func (e *StorageEngine) PutObject(ctx context.Context, bucket, key, ownerID stri
 					dedupedChunks++
 				} else {
 					var exists bool
-					err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+					err := e.executeWithLeader(ctx, func(ctx context.Context, client castorv1.MetadataServiceClient) error {
 						resp, err := client.CheckChunks(ctx, &castorv1.CheckChunksRequest{
 							ChunkHashes: []string{chunkHash},
 						})
@@ -498,7 +560,7 @@ func (e *StorageEngine) PutObject(ctx context.Context, bucket, key, ownerID stri
 
 	etag := hex.EncodeToString(objHasher.Sum(nil))
 
-	err = e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+	err = e.executeWithLeader(ctx, func(ctx context.Context, client castorv1.MetadataServiceClient) error {
 		_, err := client.CommitManifest(ctx, &castorv1.CommitManifestRequest{
 			Bucket:          bucket,
 			Key:             key,
@@ -550,7 +612,7 @@ func (e *StorageEngine) GetObjectRange(ctx context.Context, bucket, key string, 
 	}
 
 	var existsResp *castorv1.CheckBucketExistsResponse
-	err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+	err := e.executeWithLeader(ctx, func(ctx context.Context, client castorv1.MetadataServiceClient) error {
 		var err error
 		existsResp, err = client.CheckBucketExists(ctx, &castorv1.CheckBucketExistsRequest{Bucket: bucket})
 		return err
@@ -566,7 +628,7 @@ func (e *StorageEngine) GetObjectRange(ctx context.Context, bucket, key string, 
 	}
 
 	var manifestResp *castorv1.GetManifestResponse
-	err = e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+	err = e.executeWithLeader(ctx, func(ctx context.Context, client castorv1.MetadataServiceClient) error {
 		var err error
 		manifestResp, err = client.GetManifest(ctx, &castorv1.GetManifestRequest{
 			Bucket: bucket,
@@ -813,7 +875,7 @@ func (e *StorageEngine) DeleteObject(ctx context.Context, bucket, key string) er
 		return ErrBucketNotFound
 	}
 
-	err = e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+	err = e.executeWithLeader(ctx, func(ctx context.Context, client castorv1.MetadataServiceClient) error {
 		_, err := client.DeleteManifest(ctx, &castorv1.DeleteManifestRequest{
 			Bucket: bucket,
 			Key:    key,
@@ -856,7 +918,7 @@ func (e *StorageEngine) CreateBucket(ctx context.Context, bucket, ownerID string
 		ownerID = "admin"
 	}
 
-	err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+	err := e.executeWithLeader(ctx, func(ctx context.Context, client castorv1.MetadataServiceClient) error {
 		_, err := client.CreateBucket(ctx, &castorv1.CreateBucketMetadataRequest{
 			Bucket:  bucket,
 			OwnerId: ownerID,
@@ -876,7 +938,7 @@ func (e *StorageEngine) CreateBucket(ctx context.Context, bucket, ownerID string
 
 func (e *StorageEngine) ListBuckets(ctx context.Context) ([]BucketInfo, error) {
 	var resp *castorv1.ListBucketsMetadataResponse
-	err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+	err := e.executeWithLeader(ctx, func(ctx context.Context, client castorv1.MetadataServiceClient) error {
 		var err error
 		resp, err = client.ListBuckets(ctx, &castorv1.ListBucketsMetadataRequest{})
 		return err
@@ -906,7 +968,7 @@ func (e *StorageEngine) DeleteBucket(ctx context.Context, bucket string) error {
 		return errors.New("bucket name is required")
 	}
 
-	err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+	err := e.executeWithLeader(ctx, func(ctx context.Context, client castorv1.MetadataServiceClient) error {
 		_, err := client.DeleteBucket(ctx, &castorv1.DeleteBucketMetadataRequest{
 			Bucket: bucket,
 		})
@@ -932,7 +994,7 @@ func (e *StorageEngine) CheckBucketExists(ctx context.Context, bucket string) (b
 		return false, errors.New("bucket name is required")
 	}
 	var resp *castorv1.CheckBucketExistsResponse
-	err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+	err := e.executeWithLeader(ctx, func(ctx context.Context, client castorv1.MetadataServiceClient) error {
 		var err error
 		resp, err = client.CheckBucketExists(ctx, &castorv1.CheckBucketExistsRequest{Bucket: bucket})
 		return err
@@ -954,7 +1016,7 @@ func (e *StorageEngine) GetManifest(ctx context.Context, bucket, key string) (*c
 		return nil, errors.New("object key is required")
 	}
 	var resp *castorv1.GetManifestResponse
-	err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+	err := e.executeWithLeader(ctx, func(ctx context.Context, client castorv1.MetadataServiceClient) error {
 		var err error
 		resp, err = client.GetManifest(ctx, &castorv1.GetManifestRequest{
 			Bucket: bucket,
@@ -985,7 +1047,7 @@ func (e *StorageEngine) ListObjects(ctx context.Context, bucket, prefix, delimit
 	}
 
 	var resp *castorv1.ListManifestsResponse
-	err = e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+	err = e.executeWithLeader(ctx, func(ctx context.Context, client castorv1.MetadataServiceClient) error {
 		var err error
 		resp, err = client.ListManifests(ctx, &castorv1.ListManifestsRequest{
 			Bucket:    bucket,
@@ -1024,7 +1086,7 @@ func (e *StorageEngine) InitiateMultipartUpload(ctx context.Context, bucket, key
 
 	uploadID := uuid.New().String()
 
-	err = e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+	err = e.executeWithLeader(ctx, func(ctx context.Context, client castorv1.MetadataServiceClient) error {
 		_, err := client.InitiateMultipart(ctx, &castorv1.InitiateMultipartMetaRequest{
 			Bucket:      bucket,
 			Key:         key,
@@ -1092,7 +1154,7 @@ func (e *StorageEngine) UploadPart(ctx context.Context, bucket, key, uploadID st
 					dedupedChunks++
 				} else {
 					var exists bool
-					err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+					err := e.executeWithLeader(ctx, func(ctx context.Context, client castorv1.MetadataServiceClient) error {
 						resp, err := client.CheckChunks(ctx, &castorv1.CheckChunksRequest{
 							ChunkHashes: []string{chunkHash},
 						})
@@ -1140,7 +1202,7 @@ func (e *StorageEngine) UploadPart(ctx context.Context, bucket, key, uploadID st
 
 	etag := hex.EncodeToString(partHasher.Sum(nil))
 
-	err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+	err := e.executeWithLeader(ctx, func(ctx context.Context, client castorv1.MetadataServiceClient) error {
 		_, err := client.CommitPart(ctx, &castorv1.CommitPartMetaRequest{
 			UploadId:        uploadID,
 			PartNumber:      partNumber,
@@ -1195,7 +1257,7 @@ func (e *StorageEngine) CompleteMultipartUpload(ctx context.Context, bucket, key
 		return nil, errors.New("upload_id is required")
 	}
 
-	err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+	err := e.executeWithLeader(ctx, func(ctx context.Context, client castorv1.MetadataServiceClient) error {
 		_, err := client.CompleteMultipart(ctx, &castorv1.CompleteMultipartMetaRequest{
 			UploadId: uploadID,
 			Parts:    parts,
@@ -1215,7 +1277,7 @@ func (e *StorageEngine) CompleteMultipartUpload(ctx context.Context, bucket, key
 	}
 
 	var manifestResp *castorv1.GetManifestResponse
-	err = e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+	err = e.executeWithLeader(ctx, func(ctx context.Context, client castorv1.MetadataServiceClient) error {
 		var err error
 		manifestResp, err = client.GetManifest(ctx, &castorv1.GetManifestRequest{
 			Bucket: bucket,
@@ -1257,7 +1319,7 @@ func (e *StorageEngine) AbortMultipartUpload(ctx context.Context, bucket, key, u
 		return errors.New("upload_id is required")
 	}
 
-	err := e.executeWithLeader(ctx, func(client castorv1.MetadataServiceClient) error {
+	err := e.executeWithLeader(ctx, func(ctx context.Context, client castorv1.MetadataServiceClient) error {
 		_, err := client.AbortMultipart(ctx, &castorv1.AbortMultipartMetaRequest{
 			UploadId: uploadID,
 		})

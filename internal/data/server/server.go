@@ -12,6 +12,7 @@ import (
 	"github.com/tharunn0/castor/internal/data/config"
 	"github.com/tharunn0/castor/internal/data/storage"
 	"github.com/tharunn0/castor/internal/data/telemetry"
+	"github.com/tharunn0/castor/internal/grpcutil"
 	telpkg "github.com/tharunn0/castor/internal/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -57,6 +58,7 @@ func defaultPeerDialer(_ context.Context, target string) (pb.DataServiceClient, 
 		target,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		telpkg.ClientDialOption(),
+		grpcutil.ConnectParams(),
 	)
 	if err != nil {
 		return nil, nil, err

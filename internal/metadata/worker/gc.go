@@ -9,6 +9,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	castorv1 "github.com/tharunn0/castor/api/gen/go/castor/v1"
+	"github.com/tharunn0/castor/internal/grpcutil"
 	"github.com/tharunn0/castor/internal/metadata/consensus"
 	"github.com/tharunn0/castor/internal/telemetry"
 	"google.golang.org/grpc"
@@ -32,6 +33,7 @@ func defaultDataClientDialer(_ context.Context, target string) (castorv1.DataSer
 		target,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		telemetry.ClientDialOption(),
+		grpcutil.ConnectParams(),
 	)
 	if err != nil {
 		return nil, nil, err

@@ -186,3 +186,44 @@ func TestConfigLoadTLSFiles(t *testing.T) {
 		t.Fatalf("got cert=%q key=%q", cfg.S3TLSCertFile, cfg.S3TLSKeyFile)
 	}
 }
+
+func TestConfigLoadTimeouts(t *testing.T) {
+	tests := []struct {
+		name                 string
+		call, leader, chunk  string
+		wantCall, wantLeader time.Duration
+		wantChunk            time.Duration
+	}{
+		{
+			name:     "defaults",
+			wantCall: DefaultMetadataCallTimeout, wantLeader: DefaultMetadataLeaderWait, wantChunk: DefaultDataChunkTimeout,
+		},
+		{
+			name: "custom values", call: "1500ms", leader: "5s", chunk: "1m",
+			wantCall: 1500 * time.Millisecond, wantLeader: 5 * time.Second, wantChunk: time.Minute,
+		},
+		{
+			name: "invalid and non-positive fall back", call: "nope", leader: "0s", chunk: "-1s",
+			wantCall: DefaultMetadataCallTimeout, wantLeader: DefaultMetadataLeaderWait, wantChunk: DefaultDataChunkTimeout,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("METADATA_CALL_TIMEOUT", tt.call)
+			t.Setenv("METADATA_LEADER_WAIT", tt.leader)
+			t.Setenv("DATA_CHUNK_TIMEOUT", tt.chunk)
+
+			cfg := Load()
+			if cfg.MetadataCallTimeout != tt.wantCall {
+				t.Fatalf("MetadataCallTimeout = %v, want %v", cfg.MetadataCallTimeout, tt.wantCall)
+			}
+			if cfg.MetadataLeaderWait != tt.wantLeader {
+				t.Fatalf("MetadataLeaderWait = %v, want %v", cfg.MetadataLeaderWait, tt.wantLeader)
+			}
+			if cfg.DataChunkTimeout != tt.wantChunk {
+				t.Fatalf("DataChunkTimeout = %v, want %v", cfg.DataChunkTimeout, tt.wantChunk)
+			}
+		})
+	}
+}

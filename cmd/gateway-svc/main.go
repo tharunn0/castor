@@ -18,6 +18,7 @@ import (
 	"github.com/tharunn0/castor/internal/gateway/health"
 	"github.com/tharunn0/castor/internal/gateway/storage"
 	gwtelemetry "github.com/tharunn0/castor/internal/gateway/telemetry"
+	"github.com/tharunn0/castor/internal/grpcutil"
 	"github.com/tharunn0/castor/internal/telemetry"
 	"github.com/tharunn0/castor/internal/version"
 	"github.com/versity/versitygw/embedgw"
@@ -70,6 +71,7 @@ func run() error {
 		cfg.MetadataAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		telemetry.ClientDialOption(),
+		grpcutil.ConnectParams(),
 	)
 	if err != nil {
 		logger.Error("failed to connect to metadata service", "error", err, "addr", cfg.MetadataAddr)
