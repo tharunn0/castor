@@ -11,13 +11,16 @@ import (
 
 // Config holds runtime configuration for the metadata-svc node.
 type Config struct {
-	NodeID        string
-	GRPCAddr      string
-	RaftAddr      string
-	MetricsAddr   string
-	DataDir       string
-	RaftBootstrap bool
-	Peers         map[string]string // map[nodeID]raftAddr
+	NodeID   string
+	GRPCAddr string
+	RaftAddr string
+	// RaftAdvertiseAddr is advertised to peers verbatim (e.g. a stable DNS
+	// name); empty means advertise the resolved RaftAddr.
+	RaftAdvertiseAddr string
+	MetricsAddr       string
+	DataDir           string
+	RaftBootstrap     bool
+	Peers             map[string]string // map[nodeID]raftAddr
 
 	RaftLogOutput io.Writer
 }
@@ -33,6 +36,7 @@ func Load() Config {
 	dataDir := getEnv("DATA_DIR", "data/metadata")
 	bootstrapStr := getEnv("RAFT_BOOTSTRAP", "true")
 	raftLogOutputValue := getEnv("RAFT_LOG_OUTPUT", "stderr") // stderr, discard
+	raftAdvAddr := os.Getenv("RAFT_ADVERTISE_ADDR")
 
 	bootstrap, err := strconv.ParseBool(bootstrapStr)
 	if err != nil {
@@ -42,7 +46,7 @@ func Load() Config {
 	peersRaw := getEnv("RAFT_PEERS", "")
 	peers := make(map[string]string)
 	if peersRaw != "" {
-		for _, entry := range strings.Split(peersRaw, ",") {
+		for entry := range strings.SplitSeq(peersRaw, ",") {
 			parts := strings.Split(strings.TrimSpace(entry), "=")
 			if len(parts) == 2 {
 				peers[parts[0]] = parts[1]
@@ -61,14 +65,15 @@ func Load() Config {
 	}
 
 	return Config{
-		NodeID:        nodeID,
-		GRPCAddr:      grpcAddr,
-		RaftAddr:      raftAddr,
-		MetricsAddr:   metricsAddr,
-		DataDir:       dataDir,
-		RaftBootstrap: bootstrap,
-		Peers:         peers,
-		RaftLogOutput: raftLogOutput,
+		NodeID:            nodeID,
+		GRPCAddr:          grpcAddr,
+		RaftAddr:          raftAddr,
+		RaftAdvertiseAddr: raftAdvAddr,
+		MetricsAddr:       metricsAddr,
+		DataDir:           dataDir,
+		RaftBootstrap:     bootstrap,
+		Peers:             peers,
+		RaftLogOutput:     raftLogOutput,
 	}
 }
 

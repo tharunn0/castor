@@ -32,3 +32,24 @@ func TestLoad_CustomMetricsAddr(t *testing.T) {
 		t.Errorf("expected custom NodeID metadata-test, got %s", cfg.NodeID)
 	}
 }
+
+func TestLoad_RaftAdvertiseAddr(t *testing.T) {
+	t.Setenv("RAFT_ADDR", ":9091")
+	t.Setenv("RAFT_ADVERTISE_ADDR", "metadata-0.metadata.castor.svc.cluster.local:9091")
+
+	cfg := Load()
+	if cfg.RaftAddr != ":9091" {
+		t.Fatalf("RaftAddr = %q, want %q", cfg.RaftAddr, ":9091")
+	}
+	if cfg.RaftAdvertiseAddr != "metadata-0.metadata.castor.svc.cluster.local:9091" {
+		t.Fatalf("RaftAdvertiseAddr = %q", cfg.RaftAdvertiseAddr)
+	}
+}
+
+func TestLoad_RaftAdvertiseAddrDefaultsEmpty(t *testing.T) {
+	t.Setenv("RAFT_ADVERTISE_ADDR", "")
+
+	if cfg := Load(); cfg.RaftAdvertiseAddr != "" {
+		t.Fatalf("RaftAdvertiseAddr = %q, want empty", cfg.RaftAdvertiseAddr)
+	}
+}

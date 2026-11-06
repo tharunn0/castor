@@ -206,7 +206,8 @@ With `APP_ENV=prod` or `staging`, auth-svc refuses to start without `AUTH_INTERN
 |:---|:---|:---|
 | `NODE_ID` | Unique node identifier in Raft cluster | `metadata-1` |
 | `GRPC_ADDR` | Listen address for gRPC client connections | `:9090` |
-| `RAFT_ADDR` | Listen address for Raft peer consensus | `:9091` |
+| `RAFT_ADDR` | Listen address for Raft peer consensus; also advertised (as its resolved IP) when `RAFT_ADVERTISE_ADDR` is unset | `127.0.0.1:9091` |
+| `RAFT_ADVERTISE_ADDR` | Address advertised to peers and returned as the leader hint, used verbatim (e.g. `metadata-0.metadata.castor.svc.cluster.local:9091`). Set this in Kubernetes so it survives pod IP changes | `""` |
 | `RAFT_PEERS` | Comma-separated map of Raft peers (`id=host:port`) | `""` |
 | `RAFT_BOOTSTRAP` | Initial cluster bootstrap trigger | `false` |
 | `DATA_DIR` | Local disk root for Raft WAL and BadgerDB | `/data` |

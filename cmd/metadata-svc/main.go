@@ -55,6 +55,7 @@ func run() error {
 		"node_id", cfg.NodeID,
 		"grpc_addr", cfg.GRPCAddr,
 		"raft_addr", cfg.RaftAddr,
+		"raft_advertise_addr", cfg.RaftAdvertiseAddr,
 		"metrics_addr", cfg.MetricsAddr,
 		"data_dir", cfg.DataDir,
 		"bootstrap", cfg.RaftBootstrap,

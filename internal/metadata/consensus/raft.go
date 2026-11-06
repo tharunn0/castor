@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -127,15 +126,10 @@ func NewRaftNode(cfg config.Config, fsm *FSM, opts ...RaftOption) (*RaftNode, er
 		return nil, err
 	}
 
-	raftAddr, err := net.ResolveTCPAddr("tcp", cfg.RaftAddr)
+	transport, err := newRaftTransport(cfg.RaftAddr, cfg.RaftAdvertiseAddr, os.Stderr)
 	if err != nil {
 		_ = boltStore.Close()
-		return nil, fmt.Errorf("failed to resolve addr : %s, error: %w", cfg.RaftAddr, err)
-	}
-	transport, err := raft.NewTCPTransport(raftAddr.String(), nil, 3, 10*time.Second, os.Stderr)
-	if err != nil {
-		_ = boltStore.Close()
-		return nil, fmt.Errorf("%w: addr : %s", err, raftAddr.String())
+		return nil, err
 	}
 
 	raftConfig := raft.DefaultConfig()
